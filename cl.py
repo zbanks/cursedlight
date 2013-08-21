@@ -2,9 +2,9 @@ import Queue
 import asyncore
 import collections
 import evdev
-import glob
 import logging
 import serial
+import sys
 import threading
 import time
 import urwid
@@ -14,6 +14,12 @@ from evdev import ecodes as E
 
 logging.basicConfig(filename="/tmp/cl.log", level=logging.DEBUG)
 logger = logging.getLogger(__name__)
+
+def exception_handler(type, value, tb):
+    logger.exception("Uncaught exception: {0}".format(str(value)))
+    logger.exception(tb.format_exc())
+
+sys.excepthook = exception_handler
 
 # Group invididual can devices to get the same set of commands
 CAN_DEVICE_GROUPS = {
@@ -38,6 +44,7 @@ CAN_DEVICES = dict(reduce(lambda acc, val: acc + val.items(), CAN_DEVICE_GROUPS.
 
 # Multicast
 CAN_ALL_ADDRESS = 0x0000
+CAN_DEVICES[CAN_ALL_ADDRESS] = "(All)"
 
 class CanBus(object):
     """
@@ -214,6 +221,11 @@ class AsyncRawKeyboard(threading.Thread):
     new events to the `kbd_evts` queue. 
     If `grab` is True, then keyboard events are not propegated to the rest of the system.
     """
+    # Why aren't these defined in evdev.ecodes!? :(
+
+    KEY_UP = 0
+    KEY_DOWN = 1
+    KEY_HOLD = 2
     def __init__(self, dev_input, kid, kbd_evts, grab=True):
         self.dev = evdev.InputDevice(dev_input)
         if evdev.ecodes.EV_KEY in self.dev.capabilities() and evdev.ecodes.EV_LED in self.dev.capabilities():
@@ -222,6 +234,7 @@ class AsyncRawKeyboard(threading.Thread):
             self.kbd_evs = kbd_evts
             self.running = True
             self.grab = grab
+            self.pressed = set()
             if self.grab:
                 self.dev.grab()
             threading.Thread.__init__(self)
@@ -234,7 +247,11 @@ class AsyncRawKeyboard(threading.Thread):
             if not self.running:
                 return
             if ev.type == evdev.ecodes.EV_KEY:
-                self.kbd_evs.put((self.kid, ev))
+                if ev.value == self.KEY_DOWN:
+                    self.pressed.add(ev.code)
+                if ev.value == self.KEY_UP:
+                    self.pressed.discard(ev.code)
+                self.kbd_evs.put((self.kid, ev, self.pressed))
 
     def stop(self):
         self.running = False
@@ -248,11 +265,12 @@ class Keyboards(object):
     Exposes `events`, instance of Queue.Queue, containing the events from all 
     the keyboard objects.
     """
+
     def __init__(self):
         self.events = Queue.Queue()
         self.kbds = []
         # Detect which things in /dev/input/event* are keyboards
-        for path in glob.glob("/dev/input/event*"):
+        for path in evdev.list_devices():
             kbd = AsyncRawKeyboard(path, len(self.kbds), self.events, grab=False)
             if not kbd.is_keyboard:
                 continue
@@ -287,6 +305,25 @@ class CustomSelectEventLoop(urwid.SelectEventLoop):
         super(CustomSelectEventLoop, self)._loop()
         self.custom_function()
 
+class CANDeviceGroupUI(object):
+    def __init__(self):
+        self.pile = urwid.Pile([])
+        bx = urwid.Filler(self.pile, valign='top')
+        self.base = urwid.LineBox(bx)
+
+        self.options = urwid.Columns([])
+        self.enabled = urwid.CheckBox('Enabled')
+        self.muted = urwid.CheckBox('Muted')
+
+        self.dev_group = urwid.Text('Dev group', align='center')
+        self.effects = urwid.Pile([])
+
+        for w in [self.enabled, self.muted]:
+            self.options.contents.append((w, self.options.options()))
+
+        for w in [self.dev_group, self.options, self.effects]:
+            self.pile.contents.append((w, self.pile.options()))
+
 class CursedLightUI(object):
     """
     My abstraction for what belongs in this class vs. other classes has totally
@@ -295,7 +332,9 @@ class CursedLightUI(object):
     palette = [
         ('bpm', '', '', '', '#333', '#ddd'),
         ('bpm_text', '', '', '', '#333', '#ddd'),
-        ('bg', '', '', '', '#333', '#ddd'),
+        ('bg', '', '', '', '#333', '#fff'),
+        ('status', '', '', '', '#333', '#ddd'),
+        ('status', '', '', '', '#333', '#ddd'),
     ]
     def __init__(self, keyboards, effects_runner):
         self.tb = Timebase()
@@ -312,16 +351,24 @@ class CursedLightUI(object):
         self.loop = urwid.MainLoop(placeholder, self.palette, event_loop=evloop)
         self.loop.screen.set_terminal_properties(colors=256)
         self.loop.widget = urwid.AttrMap(placeholder, 'bg')
-        self.loop.widget.original_widget = urwid.Filler(urwid.Pile([]))
-#self.loop.event_loop.enter_idle(lambda: self.idle_loop())
 
-        self.pile = self.loop.widget.base_widget
+        self.header = urwid.Columns([])
+        self.footer = urwid.Columns([])
+        self.body = urwid.Pile([])
 
-        self.status = urwid.Text(('status', 'CursedLight - Debug'), align='center')
-        self.bpm = urwid.Text("", align='center')
+        self.loop.widget.original_widget = urwid.Frame(body=self.body, header=self.header, footer=self.footer)
 
-        for item in [self.status, self.bpm]:
-            self.pile.contents.append((item, self.pile.options()))
+        self.status = urwid.Text(('status', 'CursedLight - Debug'), align='left')
+        self.device_status = urwid.Text(('status', 'Devices'), align='right')
+        self.bpm = urwid.Text("", align='left')
+        self.ticker = urwid.Text("", align='right')
+
+        self.header.contents.append((self.status, self.header.options()))
+        self.header.contents.append((self.device_status, self.header.options()))
+        self.footer.contents.append((self.bpm, self.footer.options()))
+        self.footer.contents.append((self.ticker, self.footer.options()))
+
+        self.setup_devices()
 
         self.keypress_master = {
             E.KEY_D: lambda ev: self.tb.multiply(2),
@@ -333,21 +380,34 @@ class CursedLightUI(object):
             E.KEY_Z: lambda ev: self.effects_runner.add_effect(SolidColorEffect, [0], HSVA['red']),
         }
 
+
+    def setup_devices(self):
+        self.dguis = {}
+        for devgroup, devs in CAN_DEVICE_GROUPS.items():
+            dgui = CANDeviceGroupUI()
+            self.body.contents.append((dgui.base, self.body.options()))
+            dgui.dev_group.set_text("{} ({})".format(devgroup, len(devs)))
+            self.dguis[devgroup] = dgui
+        self.device_status.set_text("Devices: {} CAN;".format(len(self.effects_runner.canbus.addresses)-1))
+
+
     def loop_forever(self):
         self.loop.run()
 
     def idle_loop(self):
         tick = self.tb.tick()
-        self.bpm.set_text([('bpm_text', 'Tick: '), ('bpm', '{0}.{1:03d}'.format(*tick)),
-                           ('bpm_text', 'BPM: '), ('bpm', '{: <6.01f}'.format(self.tb.bpm))])
+        self.ticker.set_text([('bpm_text', 'Tick: '), ('bpm', '{0}.{1:03d}'.format(*tick))])
+        self.bpm.set_text([('bpm_text', 'BPM: '), ('bpm', '{: <6.01f}'.format(self.tb.bpm))])
         if tick[1] < 10:
-            self.keyboards.set_all_leds(caps=tick[0] % 2)
+            self.keyboards.set_all_leds(caps=tick[0] == 0)
 
         self.effects_runner.tick(tick)
 
         while not self.keyboards.events.empty():
             try:
-                kid, ev = self.keyboards.events.get_nowait()
+                kid, ev, pressed = self.keyboards.events.get_nowait()
+                if ev.value == 1:
+                    logger.debug("KEY: %s, %s, %s", kid, evdev.categorize(ev), map(lambda x: E.KEY[x], pressed))
             except Queue.Empty:
                 pass
             else:
@@ -367,18 +427,19 @@ def main():
     keyboards = Keyboards()
     try:
         print "Found %d keyboards" % len(keyboards.kbds)
+        logger.debug("Found %d keyboards" % len(keyboards.kbds))
 #keyboards.set_leds(True, True, True)
         time.sleep(0.5)
 #keyboards.set_leds(False,False,False)
         bus = FakeCanBus("/dev/ttyUSB0", 115200)
         effects_runner = EffectsRunner(bus)
         [effects_runner.add_device(*dev) for dev in CAN_DEVICES.items()]
+        ui = CursedLightUI(keyboards, effects_runner)
     except Exception:
         keyboards.stop()
         raise
 
     try:
-        ui = CursedLightUI(keyboards, effects_runner)
         ui.loop_forever()
     except KeyboardInterrupt:
         pass
