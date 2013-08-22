@@ -10,6 +10,8 @@ import time
 import urwid
 
 from effects import *
+from config import *
+from curtain import BeatBlaster
 from evdev import ecodes as E
 
 logging.basicConfig(filename="/tmp/cl.log", level=logging.DEBUG)
@@ -17,33 +19,15 @@ logger = logging.getLogger(__name__)
 
 def exception_handler(type, value, tb):
     logger.exception("Uncaught exception: {0}".format(str(value)))
-    logger.exception(tb.format_exc())
+    logger.exception(str(tb))
 
 sys.excepthook = exception_handler
 
-# Group invididual can devices to get the same set of commands
-CAN_DEVICE_GROUPS = {
-    "Left Dig": {
-        0x0010: "D left0",
-        0x0011: "D left1",
-        0x0012: "D left2",
-    },
-    "Top Dig": {
-        0x0020: "D top0",
-        0x0021: "D top1",
-    },
-    "Right Dig": {
-        0x0030: "D right0",
-        0x0031: "D right1",
-        0x0032: "D right2",
-    },
-}
 
 # List of all can devices
 CAN_DEVICES = dict(reduce(lambda acc, val: acc + val.items(), CAN_DEVICE_GROUPS.values(), []))
 
 # Multicast
-CAN_ALL_ADDRESS = 0x0000
 CAN_DEVICES[CAN_ALL_ADDRESS] = "(All)"
 
 class CanBus(object):
@@ -96,6 +80,9 @@ class EffectsRunner(object):
         self.canbus.send_to_all([self.canbus.CMD_RESET, 0, 0,0,0, 0,0,0])
         # self.effects :: {address ->  {id -> Effect}}
         self.effects = collections.defaultdict(dict)
+        self.effects_named = {}
+        if IRON_CURTAIN_ENABLED:
+            self.iron_curtain = BeatBlaster(IRON_CURTAIN_ADDR)
 
     def tick(self, tick):
         if tick == self.last_tick:
@@ -103,14 +90,25 @@ class EffectsRunner(object):
         beat, fractick = tick
         if tick[0] != self.last_tick[0]:
             fractick = 0
+            if IRON_CURTAIN_ENABLED:
+                self.iron_curtain.beat(beat)
+        if IRON_CURTAIN_ENABLED:
+            self.iron_curtain.sub_beat(beat, fractick)
+
+        tick = (beat, fractick)
+        # XXX: disabled to not clog up the logs
 #self.canbus.send_to_all([self.canbus.CMD_TICK, fractick, 0,0,0, 0,0,0])
+        
+        # Maybe the effects want to do something?
+        for eff in self.effects_named.values():
+            eff.tick(tick)
 
         self.last_tick = tick
 
     def add_device(self, uid, name):
         self.canbus.addresses[uid] = name
 
-    def add_effect(self, effect, addresses, *args, **kwargs):
+    def add_effect(self, name, effect, addresses, *args, **kwargs):
         """
         Add an effect:
         - Generate an appropriate uid for the effect that isn't already in use
@@ -125,11 +123,30 @@ class EffectsRunner(object):
         for add in addresses:
             self.effects[add][uid] = eff
 
+        self.effects_named[name] = eff
         return eff
+
+    def msg_effect(self, name, data):
+        eff = self.effects_named[name]
+        eff.msg(data)
+
+    def stop_effect(self, name):
+        eff = self.effects_named.pop(name)
+        logger.debug(self.effects)
+
+        for add in eff.device_ids:
+            self.effects[add].pop(eff.unique_id)
+
+        eff.stop()
+        return eff
+
+    def effect_name_exists(self, name):
+        return name in self.effects_named
 
     def prune_effects(self):
         # Removed stopped effects
         # Sort of shitty, but meh
+        logger.warning("DEPRECATED: prune_effects")
         for add in addresses:
             for uid in self.effects[add]:
                 if self.effects[add][uid].stopped:
@@ -305,20 +322,52 @@ class CustomSelectEventLoop(urwid.SelectEventLoop):
         super(CustomSelectEventLoop, self)._loop()
         self.custom_function()
 
+class IronCurtainUI(object):
+    def __init__(self, change_scene):
+        self.name = IRON_CURTAIN
+        self.pile = urwid.Pile([])
+        bx = urwid.Filler(self.pile, valign='top')
+        self.base = urwid.LineBox(bx)
+
+        self.enable = urwid.CheckBox('Enable', True)
+        self.mute = urwid.CheckBox('Mute')
+        self.freeze = urwid.CheckBox('Freeze')
+        self.reset = urwid.Button('Reset')
+
+        self.kbd_test = urwid.Text('')
+        self.dev_group = urwid.Text(self.name, align='center')
+        self.effects = urwid.Pile([])
+
+
+        for w in [self.dev_group, self.kbd_test, self.enable, self.mute, self.freeze, self.reset, self.effects]:
+            self.pile.contents.append((w, self.pile.options()))
+
+        def radio_change(btn, new_state, scene_num):
+            if new_state == True:
+                change_scene(scene_num)
+
+        for i, scene in enumerate(IRON_CURTAIN_SCENES):
+            btn = urwid.RadioButton("iron_curtain_scene", scene, i == 0, radio_change, i)
+            self.pile.contents.append((btn, self.pile.options()))
+
 class CANDeviceGroupUI(object):
-    def __init__(self):
+    def __init__(self, name):
+        self.name = name
         self.pile = urwid.Pile([])
         bx = urwid.Filler(self.pile, valign='top')
         self.base = urwid.LineBox(bx)
 
         self.options = urwid.Columns([])
-        self.enabled = urwid.CheckBox('Enabled')
-        self.muted = urwid.CheckBox('Muted')
+        self.enable = urwid.CheckBox('Enable', True)
+        self.mute = urwid.CheckBox('Mute')
+        self.freeze = urwid.CheckBox('Freeze')
+        self.reset = urwid.Button('Reset')
+        self.kbd_test = urwid.Text('')
 
         self.dev_group = urwid.Text('Dev group', align='center')
         self.effects = urwid.Pile([])
 
-        for w in [self.enabled, self.muted]:
+        for w in [self.mute, self.freeze, self.reset, self.kbd_test]:
             self.options.contents.append((w, self.options.options()))
 
         for w in [self.dev_group, self.options, self.effects]:
@@ -347,6 +396,9 @@ class CursedLightUI(object):
         evloop = CustomSelectEventLoop()
         evloop.custom_function = lambda: self.idle_loop()
 
+        self.kbd_event_handlers = collections.defaultdict(list)
+        self.kbd_event_handlers[KEYBOARD_MAP['MASTER']].append(self.master_kbd_handler)
+
         placeholder = urwid.SolidFill()
         self.loop = urwid.MainLoop(placeholder, self.palette, event_loop=evloop)
         self.loop.screen.set_terminal_properties(colors=256)
@@ -354,7 +406,7 @@ class CursedLightUI(object):
 
         self.header = urwid.Columns([])
         self.footer = urwid.Columns([])
-        self.body = urwid.Pile([])
+        self.body = urwid.Columns([])
 
         self.loop.widget.original_widget = urwid.Frame(body=self.body, header=self.header, footer=self.footer)
 
@@ -377,19 +429,84 @@ class CursedLightUI(object):
             E.KEY_Q: lambda ev: self.stop(),
             E.KEY_R: lambda ev: self.tb.sync(ev.timestamp()),
             E.KEY_T: lambda ev: self.tb.tap(ev.timestamp()),
-            E.KEY_Z: lambda ev: self.effects_runner.add_effect(SolidColorEffect, [0], HSVA['red']),
         }
+
+    def master_kbd_handler(self, event):
+        kid, ev, pressed = event
+        if ev.value == 1: #T down
+            if ev.code in self.keypress_master:
+                self.keypress_master[ev.code](ev)
+
+    def iron_curtain_kbd_handler(self, event, icui):
+        kid, ev, pressed = event
+        if ev.value == 1 and ev.code == E.KEY_G:
+            self.effect_runner.iron_curtain.change_scene(0)
+
+    def iron_curtain_ui_handler(self, new_scene):
+        self.effect_runner.iron_curtain.change_scene(new_scene)
+
+    def can_device_kbd_handler(self, event, dgui, devs):
+        def toggle_effect(eff_name, *args, **kwargs):
+            if self.effects_runner.effect_name_exists(eff_name):
+                eff = self.effects_runner.stop_effect(eff_name)
+                dgui.effects.contents = filter(lambda x: x[0] != eff.ui.base, dgui.effects.contents)
+                return False 
+            else:
+                eff = self.effects_runner.add_effect(eff_name, *args, **kwargs)
+                dgui.effects.contents.append((eff.ui.base, dgui.effects.options()))
+                return True
+
+        kid, ev, pressed = event
+        if ev.value == 1:
+            dgui.kbd_test.set_text('KEY ({})'.format(kid))
+        elif ev.value == 0:
+            dgui.kbd_test.set_text('')
+
+        solid_color_keys = {
+            E.KEY_Z: 'red',
+            E.KEY_X: 'orange',
+            E.KEY_C: 'yellow',
+            E.KEY_V: 'green',
+            E.KEY_B: 'cyan',
+            E.KEY_N: 'blue',
+            E.KEY_M: 'purple',
+            E.KEY_COMMA: 'white',
+
+        }
+
+        if ev.value == 1:
+            if ev.code in solid_color_keys:
+                color_name = solid_color_keys[ev.code]
+                eff_name = "{} solid {}".format(dgui.name, color_name)
+                toggle_effect(eff_name, SolidColorEffect, devs.keys(), HSVA[color_name])
+            elif ev.code == E.KEY_A:
+                eff_name = "{} flash_rainbow".format(dgui.name)
+                toggle_effect(eff_name, FlashRainbowEffect, devs.keys())
+            elif ev.code == E.KEY_L:
+                eff_name = "{} pulse black".format(dgui.name)
+                toggle_effect(eff_name, PulseColorEffect, devs.keys(), HSVA["black"])
 
 
     def setup_devices(self):
         self.dguis = {}
+        def kbd_handler(dgui, devs): return lambda ev: self.can_device_kbd_handler(ev, dgui, devs)
         for devgroup, devs in CAN_DEVICE_GROUPS.items():
-            dgui = CANDeviceGroupUI()
+            dgui = CANDeviceGroupUI(devgroup)
             self.body.contents.append((dgui.base, self.body.options()))
             dgui.dev_group.set_text("{} ({})".format(devgroup, len(devs)))
             self.dguis[devgroup] = dgui
-        self.device_status.set_text("Devices: {} CAN;".format(len(self.effects_runner.canbus.addresses)-1))
-
+            self.kbd_event_handlers[KEYBOARD_MAP[devgroup]].append(
+                    kbd_handler(dgui, devs)
+            )
+        self.device_status.set_text("Devices: {} CAN".format(len(self.effects_runner.canbus.addresses)-1))
+        if IRON_CURTAIN_ENABLED:
+            icui = IronCurtainUI(lambda sc: self.iron_curtain_ui_handler(sc))
+            self.body.contents.append((icui.base, self.body.options()))
+            self.dguis[IRON_CURTAIN] = icui
+            self.kbd_event_handlers[KEYBOARD_MAP[IRON_CURTAIN]].append(
+                (lambda ui: lambda ev: self.iron_curtain_kbd_handler(ev, ui))(icui)
+            )
+            self.device_status.set_text("Devices: {} CAN + Iron Curtain".format(len(self.effects_runner.canbus.addresses)-1))
 
     def loop_forever(self):
         self.loop.run()
@@ -405,15 +522,15 @@ class CursedLightUI(object):
 
         while not self.keyboards.events.empty():
             try:
-                kid, ev, pressed = self.keyboards.events.get_nowait()
+                event = self.keyboards.events.get_nowait()
+                kid, ev, pressed = event
                 if ev.value == 1:
                     logger.debug("KEY: %s, %s, %s", kid, evdev.categorize(ev), map(lambda x: E.KEY[x], pressed))
             except Queue.Empty:
                 pass
             else:
-                if kid == 0 and ev.value == 1: #T down
-                    if ev.code in self.keypress_master:
-                        self.keypress_master[ev.code](ev)
+                for ev_handler in self.kbd_event_handlers[kid]:
+                    ev_handler(event)
 
         self.last_tick = tick
 
