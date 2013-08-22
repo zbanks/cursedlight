@@ -6,6 +6,7 @@ import logging
 import serial
 import sys
 import threading
+import traceback
 import time
 import urwid
 
@@ -19,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 def exception_handler(type, value, tb):
     logger.exception("Uncaught exception: {0}".format(str(value)))
-    logger.exception(str(tb))
+    logger.exception(traceback.print_traceback(tb))
 
 sys.excepthook = exception_handler
 
@@ -334,20 +335,23 @@ class IronCurtainUI(object):
         self.freeze = urwid.CheckBox('Freeze')
         self.reset = urwid.Button('Reset')
 
+        self.div = urwid.Divider("-")
+
         self.kbd_test = urwid.Text('')
         self.dev_group = urwid.Text(self.name, align='center')
         self.effects = urwid.Pile([])
 
 
-        for w in [self.dev_group, self.kbd_test, self.enable, self.mute, self.freeze, self.reset, self.effects]:
+        for w in [self.dev_group, self.kbd_test, self.enable, self.mute, self.freeze, self.reset, self.div, self.effects]:
             self.pile.contents.append((w, self.pile.options()))
 
         def radio_change(btn, new_state, scene_num):
             if new_state == True:
                 change_scene(scene_num)
 
+        scene_group = []
         for i, scene in enumerate(IRON_CURTAIN_SCENES):
-            btn = urwid.RadioButton("iron_curtain_scene", scene, i == 0, radio_change, i)
+            btn = urwid.RadioButton(scene_group, scene, on_state_change=radio_change, state=i == 0, user_data=i)
             self.pile.contents.append((btn, self.pile.options()))
 
 class CANDeviceGroupUI(object):
@@ -440,10 +444,11 @@ class CursedLightUI(object):
     def iron_curtain_kbd_handler(self, event, icui):
         kid, ev, pressed = event
         if ev.value == 1 and ev.code == E.KEY_G:
-            self.effect_runner.iron_curtain.change_scene(0)
+            self.effects_runner.iron_curtain.change_scene(0)
 
     def iron_curtain_ui_handler(self, new_scene):
-        self.effect_runner.iron_curtain.change_scene(new_scene)
+        logger.debug("Change Iron Curtain scene: %d", new_scene)
+        self.effects_runner.iron_curtain.change_scene(new_scene)
 
     def can_device_kbd_handler(self, event, dgui, devs):
         def toggle_effect(eff_name, *args, **kwargs):

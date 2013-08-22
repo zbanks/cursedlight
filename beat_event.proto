@@ -1,0 +1,12 @@
+enum BeatType {
+    BEAT = 0;
+    SUB_BEAT = 1;
+    CHANGE_SCENE = 2;
+}
+
+message BeatEvent{
+    required BeatType type = 1 [default = BEAT];
+    optional int32  beat = 2;
+    optional int32  sub_beat = 3;
+    optional int32 scene_number = 4;
+};
