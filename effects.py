@@ -72,6 +72,9 @@ class Effect(object):
     effect_id = 0x00
     effect_name = "(Generic Effect)"
     ui_class = EffectUI
+    CMD_TICK = 0x80
+    CMD_RESET = 0xFF
+    CMD_MSG = 0x81
     def __init__(self, canbus, device_ids, unique_id, *args, **kwargs):
         """
         Initialize the effect:
@@ -155,7 +158,7 @@ class ColorEffectUI(EffectUI):
         self.text.set_text([(colorspec, '  {:.0%}  '.format(alpha)), (None, ' ' + str(self.effect))])
 
 class SolidColorEffect(Effect):
-    effect_id = 0x00
+    effect_id = 0x12
     effect_name = "Solid Color"
     ui_class = ColorEffectUI
     def init(self, color_hsva):
@@ -163,7 +166,7 @@ class SolidColorEffect(Effect):
         self.color_rgba = hsva_to_rgba(self.color_hsva)
 
     def start(self):
-        self.msg(self.color_hsva)
+        self.msg(self.color_rgba + [0x00, 0x05])
 
 class PulseColorEffect(Effect):
     effect_id = 0x08 #FIXME XXX
@@ -183,7 +186,7 @@ class PulseColorEffect(Effect):
         
 
 class FlashRainbowEffect(Effect):
-    effect_id = 0x00
+    effect_id = 0x10
     effect_name = "Flash Rainbow"
     ui_class = ColorEffectUI
     colors = ["red", "orange", "yellow", "green", "blue", "purple"]
@@ -191,12 +194,14 @@ class FlashRainbowEffect(Effect):
         self.i = 0
 
     def start(self):
-        self.tick((0,0))
+        self._msg_all([self.effect_id, self.unique_id] + self.color_rgba)
+# self.tick((0,0))
 
     def tick(self, t):
         tick, frac = t
         if frac == 0:
-            self._msg_all([self.effect_id, self.unique_id] + self.color_hsva)
+            self._msg_all([self.CMD_MSG, self.unique_id] + self.color_rgba)
+#self._msg_all([self.effect_id, self.unique_id] + self.color_hsva)
             self.ui.update()
             self.i = (self.i + 1) % len(self.colors)
 

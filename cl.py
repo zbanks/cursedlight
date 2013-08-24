@@ -44,12 +44,14 @@ class CanBus(object):
         self.addresses = {}
 
     def raw_packet(self, data):
+        logger.debug("CAN data: %s", ':'.join(map(lambda x: "{:02x}".format(x), data)))
         self.ser.write("".join([chr(d) for d in data]))
+        time.sleep(0.1)
 
     def can_packet(self, addr, can_data):
         if addr not in self.addresses:
             self.addresses[addr] = "(Unknown)"
-        can_data = can_data[:8]
+        can_data = (can_data + [0] * 8)[:8]
         # Format is: [ADDR_H, ADDR_L, LEN, (data), 0xFF]
         data = [(addr >> 8) & 0xff, addr & 0xff, len(can_data)] + can_data + [0xff]
         self.raw_packet(data)
@@ -92,13 +94,15 @@ class EffectsRunner(object):
         if tick[0] != self.last_tick[0]:
             fractick = 0
             if IRON_CURTAIN_ENABLED:
+                logger.debug("beat")
                 self.iron_curtain.beat(beat)
         if IRON_CURTAIN_ENABLED:
             self.iron_curtain.sub_beat(beat, fractick)
 
         tick = (beat, fractick)
         # XXX: disabled to not clog up the logs
-#self.canbus.send_to_all([self.canbus.CMD_TICK, fractick, 0,0,0, 0,0,0])
+        if fractick == 0:
+            self.canbus.send_to_all([self.canbus.CMD_TICK, fractick, 0,0,0, 0,0,0])
         
         # Maybe the effects want to do something?
         for eff in self.effects_named.values():
@@ -206,6 +210,9 @@ class Timebase(object):
             self.beat=0
             self.nextTick=t+self.period
 
+    def nudge(self, t):
+        self.period = 60.0 / (self.bpm + t)
+
     def tap(self, t):
         self.taps.append(t)
         self.taps=[tap for tap in self.taps if tap > t-2][0:5] # Take away everything older than 2sec or more than 5 history
@@ -228,6 +235,9 @@ class Timebase(object):
 
     def multiply(self,factor):
         self.period/=factor
+        if self.bpm > 500 or self.bpm < 20:
+            # Undo; set limits
+            self.period *= factor
 
     def tick(self):
         self.update(time.time())
@@ -427,12 +437,14 @@ class CursedLightUI(object):
         self.setup_devices()
 
         self.keypress_master = {
-            E.KEY_D: lambda ev: self.tb.multiply(2),
             E.KEY_E: lambda ev: self.tb.quantize(),
+            E.KEY_G: lambda ev: self.tb.multiply(2),
             E.KEY_H: lambda ev: self.tb.multiply(0.5),
             E.KEY_Q: lambda ev: self.stop(),
             E.KEY_R: lambda ev: self.tb.sync(ev.timestamp()),
             E.KEY_T: lambda ev: self.tb.tap(ev.timestamp()),
+            E.KEY_F: lambda ev: self.tb.nudge(1),
+            E.KEY_D: lambda ev: self.tb.nudge(-1),
         }
 
     def master_kbd_handler(self, event):
@@ -476,6 +488,7 @@ class CursedLightUI(object):
             E.KEY_N: 'blue',
             E.KEY_M: 'purple',
             E.KEY_COMMA: 'white',
+            E.KEY_DOT: 'black',
 
         }
 
@@ -553,7 +566,8 @@ def main():
 #keyboards.set_leds(True, True, True)
         time.sleep(0.5)
 #keyboards.set_leds(False,False,False)
-        bus = FakeCanBus("/dev/ttyUSB0", 115200)
+#bus = FakeCanBus("/dev/ttyUSB0", 115200)
+        bus = CanBus("/dev/ttyUSB0", 115200)
         effects_runner = EffectsRunner(bus)
         [effects_runner.add_device(*dev) for dev in CAN_DEVICES.items()]
         ui = CursedLightUI(keyboards, effects_runner)

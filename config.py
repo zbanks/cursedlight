@@ -1,19 +1,23 @@
 # Group invididual can devices to get the same set of commands
 CAN_DEVICE_GROUPS = {
-    "Left Dig": {
-        0x0010: "D left0",
-        0x0011: "D left1",
-        0x0012: "D left2",
-    },
-    "Top Dig": {
-        0x0020: "D top0",
-        0x0021: "D top1",
-    },
-    "Right Dig": {
-        0x0030: "D right0",
-        0x0031: "D right1",
-        0x0032: "D right2",
-    },
+    
+    "Debug":{
+        0x0000: "Debugging sucks"
+    }
+#    "Left Dig": {
+#        0x0000: "D left0",
+#        0x0011: "D left1",
+#        0x0012: "D left2",
+#    },
+#    "Top Dig": {
+#        0x0000: "D top0",
+#        0x0021: "D top1",
+#    },
+#    "Right Dig": {
+#        0x0030: "D right0",
+#        0x0031: "D right1",
+#        0x0032: "D right2",
+#    },
 }
 
 # Multicast
@@ -35,4 +39,5 @@ KEYBOARD_MAP = {
     "Left Dig": 0,
     "Top Dig": 1,
     "Right Dig": 0,
+    "Debug": 0,
 }
