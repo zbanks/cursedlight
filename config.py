@@ -20,6 +20,8 @@ CAN_DEVICE_GROUPS = {
 #    },
 }
 
+FRACTICK_FRAC = 1
+
 # Multicast
 CAN_ALL_ADDRESS = 0x0000
 

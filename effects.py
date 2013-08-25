@@ -137,7 +137,8 @@ class Effect(object):
     def stop(self):
         # Override this method!
         # This isn't actually standardized...
-        self.msg([0] * 6)
+#self.msg([0] * 6)
+        self._msg_all([self.canbus.CMD_STOP, self.unique_id])
         self.stopped = True
         self.ui.update()
 
@@ -158,6 +159,17 @@ class ColorEffectUI(EffectUI):
         self.text.set_text([(colorspec, '  {:.0%}  '.format(alpha)), (None, ' ' + str(self.effect))])
 
 class SolidColorEffect(Effect):
+    effect_id = 0x10
+    effect_name = "Solid Color"
+    ui_class = ColorEffectUI
+    def init(self, color_hsva):
+        self.color_hsva = color_hsva
+        self.color_rgba = hsva_to_rgba(self.color_hsva)
+
+    def start(self):
+        self.msg(self.color_rgba)
+
+class NewSolidColorEffect(Effect):
     effect_id = 0x12
     effect_name = "Solid Color"
     ui_class = ColorEffectUI
@@ -169,21 +181,23 @@ class SolidColorEffect(Effect):
         self.msg(self.color_rgba + [0x00, 0x05])
 
 class PulseColorEffect(Effect):
-    effect_id = 0x08 #FIXME XXX
-    effect_name = "Color Pulse"
+    effect_id = 0x14
+    effect_name = "Pulse"
     ui_class = ColorEffectUI
-    def init(self, color_hsva):
-        self.color_hsva = color_hsva
-        self.color_rgba = hsva_to_rgba(self.color_hsva)
+    def init(self, color_rgba, rate=0x09):
+        self.color_rgba = color_rgba
+        self.rate = rate
     
     def start(self):
-        self.tick((0, 0))
+        # [color, 0, rate]
+        # rate & 0x7 is speed, rate & 0x8 is direction
+        self.msg(self.color_rgba + [0, self.rate])
 
     def tick(self, t):
         # Send a new pulse every measure
         if t == (0, 0):
-            self._msg_all([self.effect_id, self.unique_id] + self.color_hsva)
-        
+            # Thickness
+            self.msg([4])
 
 class FlashRainbowEffect(Effect):
     effect_id = 0x10
@@ -216,10 +230,21 @@ class FlashRainbowEffect(Effect):
 class RainbowEffect(Effect):
     effect_id = 0x03
     effect_name = "Rainbow"
-    def init(self, l_period=1, t_period=1):
+    def init(self, l_period=20, t_period=1):
         self.l_period = l_period
         self.t_period = t_period
 
     def start(self):
-        self.msg([self.l_period, self.t_period, 0, 0, 0, 0])
+        # Format is [start, time, dist]
+        self.msg([0, self.t_period, self.l_period, 0])
 
+class FadeinEffect(Effect):
+    effect_id = 0x12
+    effect_name = "Fade to"
+    ui_class = ColorEffectUI
+    def init(self, color_rgba=RGBA['black'], rate=2):
+        self.color_rgba = color_rgba
+        self.rate = rate
+
+    def start(self):
+        self.msg(self.color_rgba + [0, self.rate])

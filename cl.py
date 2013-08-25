@@ -36,22 +36,24 @@ class CanBus(object):
     Abstraction for sending data at the hardware level.
     """
     CMD_TICK = 0x80
-    CMD_RESET = 0xFF
+    CMD_RESET = 0x83
+    CMD_REBOOT = 0x83
     CMD_MSG = 0x81
+    CMD_STOP = 0x82
 
     def __init__(self, port, baudrate=115200):
         self.ser = serial.Serial(port, baudrate)
         self.addresses = {}
 
     def raw_packet(self, data):
-        logger.debug("CAN data: %s", ':'.join(map(lambda x: "{:02x}".format(x), data)))
+        logger.debug("CAN data: %s", ';'.join(map(lambda x: "{:02x}".format(x), data)))
         self.ser.write("".join([chr(d) for d in data]))
-        time.sleep(0.1)
+        time.sleep(0.0001)
 
     def can_packet(self, addr, can_data):
         if addr not in self.addresses:
             self.addresses[addr] = "(Unknown)"
-        can_data = (can_data + [0] * 8)[:8]
+#can_data = (can_data + [0] * 8)[:8]
         # Format is: [ADDR_H, ADDR_L, LEN, (data), 0xFF]
         data = [(addr >> 8) & 0xff, addr & 0xff, len(can_data)] + can_data + [0xff]
         self.raw_packet(data)
@@ -101,7 +103,7 @@ class EffectsRunner(object):
 
         tick = (beat, fractick)
         # XXX: disabled to not clog up the logs
-        if fractick == 0:
+        if (fractick % FRACTICK_FRAC) == 0:
             self.canbus.send_to_all([self.canbus.CMD_TICK, fractick, 0,0,0, 0,0,0])
         
         # Maybe the effects want to do something?
@@ -479,6 +481,16 @@ class CursedLightUI(object):
         elif ev.value == 0:
             dgui.kbd_test.set_text('')
 
+        speed_keys = {
+            E.KEY_RIGHTSHIFT: 0,
+            E.KEY_RIGHTCTRL: 1,
+            E.KEY_RIGHTALT: 2,
+            # Default is 3
+            E.KEY_LEFTALT: 4,
+            E.KEY_LEFTCTRL: 5,
+            E.KEY_LEFTSHIFT: 6
+        }
+
         solid_color_keys = {
             E.KEY_Z: 'red',
             E.KEY_X: 'orange',
@@ -489,20 +501,38 @@ class CursedLightUI(object):
             E.KEY_M: 'purple',
             E.KEY_COMMA: 'white',
             E.KEY_DOT: 'black',
-
         }
+
+        fadein_color_keys = {
+            E.KEY_LEFTBRACE: 'black',
+            E.KEY_RIGHTBRACE: 'white',
+        }
+
+        rate = 3
+        for s in speed_keys:
+            if s in pressed:
+                rate = s
+                break
 
         if ev.value == 1:
             if ev.code in solid_color_keys:
                 color_name = solid_color_keys[ev.code]
                 eff_name = "{} solid {}".format(dgui.name, color_name)
                 toggle_effect(eff_name, SolidColorEffect, devs.keys(), HSVA[color_name])
+            elif ev.code in fadein_color_keys:
+                color_name = fadein_color_keys[ev.code]
+                eff_name = "{} fadein {}".format(dgui.name, color_name)
+                rate = max(0, rate - 2)
+                toggle_effect(eff_name, FadeinEffect, devs.keys(), color_rgba=RGBA[color_name], rate=rate)
             elif ev.code == E.KEY_A:
                 eff_name = "{} flash_rainbow".format(dgui.name)
                 toggle_effect(eff_name, FlashRainbowEffect, devs.keys())
+            elif ev.code == E.KEY_S:
+                eff_name = "{} smooth_rainbow".format(dgui.name)
+                toggle_effect(eff_name, RainbowEffect, devs.keys(), l_period=rate)
             elif ev.code == E.KEY_L:
                 eff_name = "{} pulse black".format(dgui.name)
-                toggle_effect(eff_name, PulseColorEffect, devs.keys(), HSVA["black"])
+                toggle_effect(eff_name, PulseColorEffect, devs.keys(), RGBA["black"])
 
 
     def setup_devices(self):
