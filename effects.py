@@ -33,6 +33,7 @@ def rgba_to_termcolor(rgba):
     return ("#" + "".join(map(h, [r,g,b])), a / 255.0, contrast_bw(rgba))
 
 HSVA = {
+    "clear":     [0x00, 0x0, 0x0, 0x0],
     "red":     [0x00, 0xff, 0xff, 0xff],
     "orange":  [254/12, 0xff, 0xff, 0xff],
     "yellow":  [254/6, 0xff, 0xff, 0xff],
@@ -44,12 +45,19 @@ HSVA = {
     "black": [0x00, 0x00, 0x00, 0xff],
 }
 
+
 RGBA = {
+    "clear":     [0x00, 0x0, 0x0, 0x0],
     "red": [0xff, 0x00, 0x00, 0xff],
+    "green": [0x00, 0xff, 0x00, 0xff],
+    "blue": [0x00, 0x00, 0xff, 0xff],
+    "white": [0xff, 0xff, 0xff, 0xff],
+    "black": [0x00, 0x00, 0x00, 0xff],
 }
 
 for name, hsva in HSVA.items():
-    RGBA[name] = hsva_to_rgba(hsva)
+    if name not in RGBA:
+        RGBA[name] = hsva_to_rgba(hsva)
 
 class EffectUI(object):
     def __init__(self, effect):
@@ -59,7 +67,7 @@ class EffectUI(object):
         self.update()
 
     def update(self):
-        self.text.set_text(str(self.effect))
+        self.text.set_text("--100%-- {}".format(str(self.effect)))
 
 
 class Effect(object):
@@ -158,35 +166,88 @@ class ColorEffectUI(EffectUI):
         colorspec = urwid.AttrSpec(textcolor, termcolor, 256)
         self.text.set_text([(colorspec, '  {:.0%}  '.format(alpha)), (None, ' ' + str(self.effect))])
 
+class StrobeColorEffectUI(EffectUI):
+    def __init__(self, effect):
+        self.effect = effect
+        self.text = urwid.Text(str(self.effect))
+        self.base = self.text #urwid.AttrMap(self.text, {})
+        self.update()
+
+    def update(self):
+        termcolor, alpha, textcolor = rgba_to_termcolor(self.effect.color_rgba)
+        if self.effect.clear:
+            termcolor = "#ccc"
+        colorspec = urwid.AttrSpec(textcolor, termcolor, 256)
+        self.text.set_text([(colorspec, '  {:.0%}  '.format(alpha)), (None, ' ' + str(self.effect) + str(self.effect.rate))])
+        
 class SolidColorEffect(Effect):
     effect_id = 0x10
     effect_name = "Solid Color"
     ui_class = ColorEffectUI
-    def init(self, color_hsva):
-        self.color_hsva = color_hsva
-        self.color_rgba = hsva_to_rgba(self.color_hsva)
+    def init(self, color_rgba):
+#self.color_hsva = color_hsva
+        self.color_rgba = color_rgba
 
     def start(self):
         self.msg(self.color_rgba)
 
-class NewSolidColorEffect(Effect):
-    effect_id = 0x12
+class StrobeColorEffect(Effect):
+    effect_id = 0x10
     effect_name = "Solid Color"
-    ui_class = ColorEffectUI
-    def init(self, color_hsva):
-        self.color_hsva = color_hsva
-        self.color_rgba = hsva_to_rgba(self.color_hsva)
+    ui_class = StrobeColorEffectUI
+    def init(self, color_rgba, rate=3):
+#self.color_hsva = color_hsva
+        self.color_rgba = color_rgba
+        self.rate = rate
+        self.clear = True
 
     def start(self):
-        self.msg(self.color_rgba + [0x00, 0x05])
+        self.msg(RGBA["clear"])
+
+    def tick(self, t):
+        # Send a new pulse every measure
+        if t == (0, 0):
+            if self.rate <= 3:
+                self.msg(self.color_rgba)
+                self.clear = False
+        elif t == (2, 0):
+            if self.rate <= 2:
+                self.msg(self.color_rgba)
+                self.clear = False
+        elif t[1] == 0:
+            if self.rate <= 1:
+                self.msg(self.color_rgba)
+                self.clear = False
+        elif t[1] > 100 and not self.clear:
+            self.msg(RGBA["clear"])
+            self.clear = True
 
 class PulseColorEffect(Effect):
     effect_id = 0x14
     effect_name = "Pulse"
     ui_class = ColorEffectUI
+    def init(self, color_rgba, rate=0x0A):
+        self.color_rgba = color_rgba
+        self.rate = 0x01 #rate
+    
+    def start(self):
+        # [color, 0, rate]
+        # rate & 0x7 is speed, rate & 0x8 is direction
+        self.msg(self.color_rgba + [0, self.rate])
+
+    def tick(self, t):
+        # Send a new pulse every measure
+        if t == (0, 0):
+            # Thickness
+            self.msg([1])
+
+class SwipeColorEffect(Effect):
+    effect_id = 0x16
+    effect_name = "Swipe"
+    ui_class = ColorEffectUI
     def init(self, color_rgba, rate=0x09):
         self.color_rgba = color_rgba
-        self.rate = rate
+        self.rate = 0x00#rate
     
     def start(self):
         # [color, 0, rate]
@@ -230,7 +291,7 @@ class FlashRainbowEffect(Effect):
 class RainbowEffect(Effect):
     effect_id = 0x03
     effect_name = "Rainbow"
-    def init(self, l_period=20, t_period=1):
+    def init(self, l_period=1, t_period=1):
         self.l_period = l_period
         self.t_period = t_period
 

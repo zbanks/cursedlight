@@ -55,7 +55,7 @@ class CanBus(object):
             self.addresses[addr] = "(Unknown)"
 #can_data = (can_data + [0] * 8)[:8]
         # Format is: [ADDR_H, ADDR_L, LEN, (data), 0xFF]
-        data = [(addr >> 8) & 0xff, addr & 0xff, len(can_data)] + can_data + [0xff]
+        data = [addr & 0xff, (addr >> 8) & 0xff, len(can_data)] + can_data + [0xff]
         self.raw_packet(data)
 
     def send_to_all(self, can_data):
@@ -103,14 +103,24 @@ class EffectsRunner(object):
 
         tick = (beat, fractick)
         # XXX: disabled to not clog up the logs
-        if (fractick % FRACTICK_FRAC) == 0:
-            self.canbus.send_to_all([self.canbus.CMD_TICK, fractick, 0,0,0, 0,0,0])
+        if SEND_BEATS and (fractick % FRACTICK_FRAC) == 0:
+            self.canbus.send_to_all([self.canbus.CMD_TICK, fractick])
         
         # Maybe the effects want to do something?
         for eff in self.effects_named.values():
             eff.tick(tick)
 
         self.last_tick = tick
+
+    def reset_device(self, uid):
+        self.canbus.can_packet(uid, [self.canbus.CMD_RESET])
+        effs = self.effects[uid]
+        for eff in effs.values():
+            try:
+                self.effects_named.pop(eff.name)
+            except KeyError:
+                pass
+        self.effects[uid] = {}
 
     def add_device(self, uid, name):
         self.canbus.addresses[uid] = name
@@ -126,6 +136,7 @@ class EffectsRunner(object):
         uid = self.get_available_uid(addresses)
         logger.debug("Putting effect %s in uid %02x", str(effect), uid)
         eff = effect(self.canbus, addresses, uid, *args, **kwargs)
+        eff.name = name
 
         for add in addresses:
             self.effects[add][uid] = eff
@@ -138,6 +149,8 @@ class EffectsRunner(object):
         eff.msg(data)
 
     def stop_effect(self, name):
+        if name not in self.effects_named:
+            return None
         eff = self.effects_named.pop(name)
         logger.debug(self.effects)
 
@@ -300,7 +313,7 @@ class Keyboards(object):
         self.events = Queue.Queue()
         self.kbds = []
         # Detect which things in /dev/input/event* are keyboards
-        for path in evdev.list_devices():
+        for path in evdev.list_devices()[::-1]:
             kbd = AsyncRawKeyboard(path, len(self.kbds), self.events, grab=False)
             if not kbd.is_keyboard:
                 continue
@@ -508,22 +521,57 @@ class CursedLightUI(object):
             E.KEY_RIGHTBRACE: 'white',
         }
 
+        pulse_color_keys = {
+            E.KEY_Q: 'red',
+            E.KEY_W: 'orange',
+            E.KEY_E: 'yellow',
+            E.KEY_R: 'green',
+            E.KEY_T: 'cyan',
+            E.KEY_Y: 'blue',
+            E.KEY_U: 'purple',
+            E.KEY_I: 'white',
+            E.KEY_O: 'black',
+        }
+
         rate = 3
         for s in speed_keys:
             if s in pressed:
-                rate = s
+                rate = speed_keys[s]
                 break
+        if E.KEY_SPACE in pressed:
+            rate *= -1
 
-        if ev.value == 1:
+        if ev.value == 0: # Key up
             if ev.code in solid_color_keys:
                 color_name = solid_color_keys[ev.code]
                 eff_name = "{} solid {}".format(dgui.name, color_name)
-                toggle_effect(eff_name, SolidColorEffect, devs.keys(), HSVA[color_name])
+                eff = self.effects_runner.stop_effect(eff_name)
+                if eff is not None:
+                    dgui.effects.contents = filter(lambda x: x[0] != eff.ui.base, dgui.effects.contents)
+        if ev.value == 1: # Key down
+            if ev.code in solid_color_keys:
+                if E.KEY_LEFTMETA in pressed:
+                    color_name = solid_color_keys[ev.code]
+                    eff_name = "{} solid {}".format(dgui.name, color_name)
+                    toggle_effect(eff_name, SolidColorEffect, devs.keys(), RGBA[color_name])
+                else:
+                    # Strobe
+                    color_name = solid_color_keys[ev.code]
+                    eff_name = "{} strobe {}".format(dgui.name, color_name)
+                    toggle_effect(eff_name, StrobeColorEffect, devs.keys(), RGBA[color_name], rate=rate)
             elif ev.code in fadein_color_keys:
                 color_name = fadein_color_keys[ev.code]
                 eff_name = "{} fadein {}".format(dgui.name, color_name)
                 rate = max(0, rate - 2)
                 toggle_effect(eff_name, FadeinEffect, devs.keys(), color_rgba=RGBA[color_name], rate=rate)
+            elif ev.code in pulse_color_keys:
+                color_name = pulse_color_keys[ev.code]
+                if E.KEY_LEFTMETA in pressed:
+                    eff_name = "{} swipe {}".format(dgui.name, color_name)
+                    toggle_effect(eff_name, SwipeColorEffect, devs.keys(), color_rgba=RGBA[color_name], rate=rate)
+                else:
+                    eff_name = "{} pulse {}".format(dgui.name, color_name)
+                    toggle_effect(eff_name, PulseColorEffect, devs.keys(), color_rgba=RGBA[color_name], rate=rate)
             elif ev.code == E.KEY_A:
                 eff_name = "{} flash_rainbow".format(dgui.name)
                 toggle_effect(eff_name, FlashRainbowEffect, devs.keys())
@@ -533,6 +581,10 @@ class CursedLightUI(object):
             elif ev.code == E.KEY_L:
                 eff_name = "{} pulse black".format(dgui.name)
                 toggle_effect(eff_name, PulseColorEffect, devs.keys(), RGBA["black"])
+            elif ev.code == E.KEY_END:
+                # Reset
+                [self.effects_runner.reset_device(uid) for uid in devs.keys()]
+                dgui.effects.contents = []
 
 
     def setup_devices(self):
@@ -596,8 +648,8 @@ def main():
 #keyboards.set_leds(True, True, True)
         time.sleep(0.5)
 #keyboards.set_leds(False,False,False)
-#bus = FakeCanBus("/dev/ttyUSB0", 115200)
-        bus = CanBus("/dev/ttyUSB0", 115200)
+        bus = FakeCanBus("/dev/ttyUSB0", 115200)
+#bus = CanBus("/dev/ttyUSB0", 115200)
         effects_runner = EffectsRunner(bus)
         [effects_runner.add_device(*dev) for dev in CAN_DEVICES.items()]
         ui = CursedLightUI(keyboards, effects_runner)

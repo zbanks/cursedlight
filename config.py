@@ -1,9 +1,12 @@
 # Group invididual can devices to get the same set of commands
 CAN_DEVICE_GROUPS = {
     
-    "Debug":{
-        0x0000: "Debugging sucks"
-    }
+    "Debug 0":{
+        0x0002: "Debugging sucks"
+    },
+    "Debug 1":{
+        0x0001: "Debugging sucks 1"
+    },
 #    "Left Dig": {
 #        0x0000: "D left0",
 #        0x0011: "D left1",
@@ -21,6 +24,7 @@ CAN_DEVICE_GROUPS = {
 }
 
 FRACTICK_FRAC = 1
+SEND_BEATS = True
 
 # Multicast
 CAN_ALL_ADDRESS = 0x0000
@@ -42,4 +46,6 @@ KEYBOARD_MAP = {
     "Top Dig": 1,
     "Right Dig": 0,
     "Debug": 0,
+    "Debug 0": 0,
+    "Debug 1": 1,
 }
