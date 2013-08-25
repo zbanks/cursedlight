@@ -194,34 +194,41 @@ class SolidColorEffect(Effect):
 class StrobeColorEffect(Effect):
     effect_id = 0x10
     effect_name = "Solid Color"
+    strlen = 10
     ui_class = StrobeColorEffectUI
     def init(self, color_rgba, rate=3):
 #self.color_hsva = color_hsva
         self.color_rgba = color_rgba
         self.rate = rate
         self.clear = True
+        self.retry = 0
 
     def start(self):
         self.msg(RGBA["clear"])
 
     def tick(self, t):
         # Send a new pulse every measure
-        if t == (0, 0):
-            if self.rate <= 3:
-                self.msg(self.color_rgba)
-                self.clear = False
-                self.ui.update()
-        elif t == (2, 0):
-            if self.rate <= 2:
-                self.msg(self.color_rgba)
-                self.clear = False
-                self.ui.update()
-        elif t[1] == 0:
-            if self.rate <= 1:
-                self.msg(self.color_rgba)
-                self.clear = False
-                self.ui.update()
-        elif t[1] > 10 and not self.clear:
+        if t[1] < self.strlen:
+            if t[0] == 0:
+                if self.rate <= 3:
+                    self.msg(self.color_rgba)
+                    self.clear = False
+                    self.ui.update()
+            elif t[0] == 2:
+                if self.rate <= 2:
+                    self.msg(self.color_rgba)
+                    self.clear = False
+                    self.ui.update()
+            else:
+                if self.rate <= 1:
+                    self.msg(self.color_rgba)
+                    self.clear = False
+                    self.ui.update()
+        elif self.retry or  t[1] > self.strlen and not self.clear:
+            if self.retry:
+                self.retry -= 1
+            else:
+                self.retry = 5
             self.msg(RGBA["clear"])
             self.clear = True
             self.ui.update()
