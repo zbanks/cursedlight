@@ -11,7 +11,7 @@ from google.protobuf import descriptor_pb2
 DESCRIPTOR = descriptor.FileDescriptor(
   name='beat_event.proto',
   package='',
-  serialized_pb='\n\x10\x62\x65\x61t_event.proto\"`\n\tBeatEvent\x12\x1d\n\x04type\x18\x01 \x02(\x0e\x32\t.BeatType:\x04\x42\x45\x41T\x12\x0c\n\x04\x62\x65\x61t\x18\x02 \x01(\x05\x12\x10\n\x08sub_beat\x18\x03 \x01(\x05\x12\x14\n\x0cscene_number\x18\x04 \x01(\x05*4\n\x08\x42\x65\x61tType\x12\x08\n\x04\x42\x45\x41T\x10\x00\x12\x0c\n\x08SUB_BEAT\x10\x01\x12\x10\n\x0c\x43HANGE_SCENE\x10\x02')
+  serialized_pb='\n\x10\x62\x65\x61t_event.proto\"\x81\x01\n\tBeatEvent\x12\x1d\n\x04type\x18\x01 \x02(\x0e\x32\t.BeatType:\x04\x42\x45\x41T\x12\x0c\n\x04\x62\x65\x61t\x18\x02 \x01(\x05\x12\x10\n\x08sub_beat\x18\x03 \x01(\x05\x12\x14\n\x0cscene_number\x18\x04 \x01(\x05\x12\t\n\x01r\x18\x05 \x01(\x05\x12\t\n\x01g\x18\x06 \x01(\x05\x12\t\n\x01\x62\x18\x07 \x01(\x05*?\n\x08\x42\x65\x61tType\x12\x08\n\x04\x42\x45\x41T\x10\x00\x12\x0c\n\x08SUB_BEAT\x10\x01\x12\x10\n\x0c\x43HANGE_SCENE\x10\x02\x12\t\n\x05\x43OLOR\x10\x03')
 
 _BEATTYPE = descriptor.EnumDescriptor(
   name='BeatType',
@@ -31,17 +31,22 @@ _BEATTYPE = descriptor.EnumDescriptor(
       name='CHANGE_SCENE', index=2, number=2,
       options=None,
       type=None),
+    descriptor.EnumValueDescriptor(
+      name='COLOR', index=3, number=3,
+      options=None,
+      type=None),
   ],
   containing_type=None,
   options=None,
-  serialized_start=118,
-  serialized_end=170,
+  serialized_start=152,
+  serialized_end=215,
 )
 
 
 BEAT = 0
 SUB_BEAT = 1
 CHANGE_SCENE = 2
+COLOR = 3
 
 
 
@@ -80,6 +85,27 @@ _BEATEVENT = descriptor.Descriptor(
       message_type=None, enum_type=None, containing_type=None,
       is_extension=False, extension_scope=None,
       options=None),
+    descriptor.FieldDescriptor(
+      name='r', full_name='BeatEvent.r', index=4,
+      number=5, type=5, cpp_type=1, label=1,
+      has_default_value=False, default_value=0,
+      message_type=None, enum_type=None, containing_type=None,
+      is_extension=False, extension_scope=None,
+      options=None),
+    descriptor.FieldDescriptor(
+      name='g', full_name='BeatEvent.g', index=5,
+      number=6, type=5, cpp_type=1, label=1,
+      has_default_value=False, default_value=0,
+      message_type=None, enum_type=None, containing_type=None,
+      is_extension=False, extension_scope=None,
+      options=None),
+    descriptor.FieldDescriptor(
+      name='b', full_name='BeatEvent.b', index=6,
+      number=7, type=5, cpp_type=1, label=1,
+      has_default_value=False, default_value=0,
+      message_type=None, enum_type=None, containing_type=None,
+      is_extension=False, extension_scope=None,
+      options=None),
   ],
   extensions=[
   ],
@@ -89,8 +115,8 @@ _BEATEVENT = descriptor.Descriptor(
   options=None,
   is_extendable=False,
   extension_ranges=[],
-  serialized_start=20,
-  serialized_end=116,
+  serialized_start=21,
+  serialized_end=150,
 )
 
 _BEATEVENT.fields_by_name['type'].enum_type = _BEATTYPE

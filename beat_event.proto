@@ -2,6 +2,7 @@ enum BeatType {
     BEAT = 0;
     SUB_BEAT = 1;
     CHANGE_SCENE = 2;
+    COLOR = 3;
 }
 
 message BeatEvent{
@@ -9,4 +10,7 @@ message BeatEvent{
     optional int32  beat = 2;
     optional int32  sub_beat = 3;
     optional int32 scene_number = 4;
+    optional int32 r = 5;
+    optional int32 g = 6;
+    optional int32 b = 7;
 };

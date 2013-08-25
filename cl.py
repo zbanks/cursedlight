@@ -95,8 +95,7 @@ class EffectsRunner(object):
         beat, fractick = tick
         if tick[0] != self.last_tick[0]:
             fractick = 0
-            if IRON_CURTAIN_ENABLED:
-                logger.debug("beat")
+            if IRON_CURTAIN_ENABLED and fractick % IRON_CURTAIN_FT == 0:
                 self.iron_curtain.beat(beat)
         if IRON_CURTAIN_ENABLED:
             self.iron_curtain.sub_beat(beat, fractick)

@@ -23,15 +23,16 @@ CAN_DEVICE_GROUPS = {
 #    },
 }
 
-FRACTICK_FRAC = 1
+FRACTICK_FRAC = 5
 SEND_BEATS = True
 
 # Multicast
 CAN_ALL_ADDRESS = 0x0000
 
 IRON_CURTAIN_ENABLED = True
+IRON_CURTAIN_FT = 30
 IRON_CURTAIN = "Iron Curtain"
-IRON_CURTAIN_ADDR = "tcp://*:8000"
+IRON_CURTAIN_ADDR = "tcp://donlanes.mit.edu:8001"
 IRON_CURTAIN_SCENES = [
     'scene 0',
     'scene 1',
