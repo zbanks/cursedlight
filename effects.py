@@ -210,17 +210,21 @@ class StrobeColorEffect(Effect):
             if self.rate <= 3:
                 self.msg(self.color_rgba)
                 self.clear = False
+                self.ui.update()
         elif t == (2, 0):
             if self.rate <= 2:
                 self.msg(self.color_rgba)
                 self.clear = False
+                self.ui.update()
         elif t[1] == 0:
             if self.rate <= 1:
                 self.msg(self.color_rgba)
                 self.clear = False
-        elif t[1] > 100 and not self.clear:
+                self.ui.update()
+        elif t[1] > 10 and not self.clear:
             self.msg(RGBA["clear"])
             self.clear = True
+            self.ui.update()
 
 class PulseColorEffect(Effect):
     effect_id = 0x14
