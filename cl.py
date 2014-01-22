@@ -40,6 +40,7 @@ class CanBus(object):
     CMD_REBOOT = 0x83
     CMD_MSG = 0x81
     CMD_STOP = 0x82
+    CMD_PARAM = 0x85
 
     def __init__(self, port, baudrate=115200):
         self.ser = serial.Serial(port, baudrate)
@@ -83,6 +84,8 @@ class EffectsRunner(object):
         self.canbus = canbus
         self.last_tick = (0,0)
         self.canbus.send_to_all([self.canbus.CMD_RESET, 0, 0,0,0, 0,0,0])
+        for i, gc in enumerate(GLOBAL_CALIBRATION):
+            self.canbus.send_to_all([self.canbus.CMD_PARAM, i, int(255.0 * gc) ,0,0, 0,0,0])
         # self.effects :: {address ->  {id -> Effect}}
         self.effects = collections.defaultdict(dict)
         self.effects_named = {}
@@ -113,6 +116,8 @@ class EffectsRunner(object):
 
     def reset_device(self, uid):
         self.canbus.can_packet(uid, [self.canbus.CMD_RESET])
+        for i, gc in enumerate(CAN_DEVICE_CALIBRATION.get(uid, GLOBAL_CALIBRATION)):
+            self.canbus.send_to_all([self.canbus.CMD_PARAM, i, int(255.0 * gc) ,0,0, 0,0,0])
         effs = self.effects[uid]
         for eff in effs.values():
             try:
@@ -312,8 +317,10 @@ class Keyboards(object):
         self.events = Queue.Queue()
         self.kbds = []
         # Detect which things in /dev/input/event* are keyboards
+        dograb = False
         for path in evdev.list_devices()[::-1]:
-            kbd = AsyncRawKeyboard(path, len(self.kbds), self.events, grab=False)
+            kbd = AsyncRawKeyboard(path, len(self.kbds), self.events, grab=dograb)
+            dograb = True
             if not kbd.is_keyboard:
                 continue
             self.kbds.append(kbd)
@@ -514,6 +521,17 @@ class CursedLightUI(object):
             E.KEY_COMMA: 'white',
             E.KEY_DOT: 'black',
         }
+        pulse_color_keys = {
+            E.KEY_Z: 'red',
+            E.KEY_X: 'orange',
+            E.KEY_C: 'yellow',
+            E.KEY_V: 'green',
+            E.KEY_B: 'cyan',
+            E.KEY_N: 'blue',
+            E.KEY_M: 'purple',
+            E.KEY_COMMA: 'white',
+            E.KEY_DOT: 'black',
+        }
 
         fadein_color_keys = {
             E.KEY_LEFTBRACE: 'black',
@@ -557,7 +575,8 @@ class CursedLightUI(object):
                     # Strobe
                     color_name = solid_color_keys[ev.code]
                     eff_name = "{} strobe {}".format(dgui.name, color_name)
-                    toggle_effect(eff_name, StrobeColorEffect, devs.keys(), RGBA[color_name], rate=rate)
+#toggle_effect(eff_name, StrobeColorEffect, devs.keys(), RGBA[color_name], rate=rate)
+                    toggle_effect(eff_name, StrobeEffect, devs.keys(), RGBA[color_name], rate=rate)
             elif ev.code in fadein_color_keys:
                 color_name = fadein_color_keys[ev.code]
                 eff_name = "{} fadein {}".format(dgui.name, color_name)
@@ -647,8 +666,8 @@ def main():
 #keyboards.set_leds(True, True, True)
         time.sleep(0.5)
 #keyboards.set_leds(False,False,False)
-        bus = FakeCanBus("/dev/ttyUSB0", 115200)
-#bus = CanBus("/dev/ttyUSB0", 115200)
+#bus = FakeCanBus("/dev/ttyUSB0", 115200)
+        bus = CanBus("/dev/ttyUSB0", 115200)
         effects_runner = EffectsRunner(bus)
         [effects_runner.add_device(*dev) for dev in CAN_DEVICES.items()]
         ui = CursedLightUI(keyboards, effects_runner)

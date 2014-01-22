@@ -320,3 +320,36 @@ class FadeinEffect(Effect):
 
     def start(self):
         self.msg(self.color_rgba + [0, self.rate])
+
+class StrobeEffect(Effect):
+    effect_id = 0x18
+    effect_name = "Strobe"
+    ui_class = ColorEffectUI
+    def init(self, color_rgba=RGBA['white'], rate=3):
+        self.color_rgba = color_rgba
+        self.rate = rate
+
+    def start(self):
+        self.msg(self.color_rgba + self._get_rate())
+
+    """
+    Note: Msg 0xC0 to change color; Msg 0xC1 to change rate
+    """
+
+    def _get_rate(self):
+        RATES = (
+            [8, 255],
+            [4, 255],
+            [2, 255],
+            [1, 255],
+            [1, 128],
+            [1, 64],
+            [1, 32],
+            [1, 16]
+        )
+        if self.rate >= len(RATES):
+            return RATES[-1][::-1]
+        if self.rate < 0:
+            return [16, 255][::-1]
+        return RATES[self.rate][::-1]
+
