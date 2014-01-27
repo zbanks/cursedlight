@@ -222,7 +222,7 @@ class Pattern(object):
         self.title = name
 
     def get_channel_description(self, i):
-        channel = self.channels(i)
+        channel = self.channels[i]
         return "Channel %d: %s" % (i+1, str(channel)) #TODO
 
     def serialize(self):
@@ -236,45 +236,133 @@ class Pattern(object):
     @classmethod
     def deserialize(cls, d):
         # Maybe there should be more checks. Don't mess around too much
-        if d["_seqlen"] != self.SEQ_LEN:
-            raise Exception("Unable to deserialize pattern; mismatched seqlen (should be %d)" % self.SEQ_LEN)
-        if d["_channels"] != self.CHANNELS:
+        if d["_seqlen"] != cls.SEQ_LEN:
+            raise Exception("Unable to deseri1alize pattern; mismatched seqlen (should be %d)" % self.SEQ_LEN)
+        if d["_channels"] != cls.CHANNELS:
             raise Exception("Unable to deserialize pattern; mismatched channels (should be %d)" % self.CHANNELS)
         p = cls(name=d["title"])
         p.data = d["data"]
         p.channels = d["channels"]
         return p
 
+EXAMPLE_PATTERN_SERIALIZED = {
+    "data": [[1,0,0,0] * 8, [1,0] * 16, [0,0,1,0,0,1,0,1] * 4] + [[0] * 32 for i in range(5)],
+    "channels": ["Ch"] * 8,
+    "title": "Ex. Pattern",
+    "_seqlen": Pattern.SEQ_LEN,
+    "_channels": Pattern.CHANNELS
+}
+
 class SequencingGrid(object):
+    # Keys 1-8; Q-I; A-K; Z-, form a grid 
+    KEYS_GRID = {
+        E.KEY_1: (0, 0), E.KEY_2: (0, 1), E.KEY_3: (0, 2), E.KEY_4: (0, 3),
+        E.KEY_5: (0, 4), E.KEY_6: (0, 5), E.KEY_7: (0, 6), E.KEY_8: (0, 7),
+
+        E.KEY_Q: (1, 0), E.KEY_W: (1, 1), E.KEY_E: (1, 2), E.KEY_R: (1, 3),
+        E.KEY_T: (1, 4), E.KEY_Y: (1, 5), E.KEY_U: (1, 6), E.KEY_I: (1, 7),
+
+        E.KEY_A: (2, 0), E.KEY_S: (2, 1), E.KEY_D: (2, 2), E.KEY_F: (2, 3),
+        E.KEY_G: (2, 4), E.KEY_H: (2, 5), E.KEY_J: (2, 6), E.KEY_K: (2, 7),
+
+        E.KEY_Z: (3, 0), E.KEY_X: (3, 1), E.KEY_C: (3, 2), E.KEY_V: (3, 3),
+        E.KEY_B: (3, 4), E.KEY_N: (3, 5), E.KEY_M: (3, 6), E.KEY_COMMA: (3, 7),
+    }
+    KEY_CH1 = E.KEY_9
+    KEY_CH2 = E.KEY_O
+    KEY_CH3 = E.KEY_L
+    KEY_CH4 = E.KEY_DOT
+
+    KEY_CYCLE = E.KEY_TAB
+    KEY_LEFT = E.KEY_LEFTSHIFT
+    KEY_RIGHT = E.KEY_RIGHTSHIFT
+    KEY_OUT = E.KEY_LEFTALT
+    KEY_IN = E.KEY_RIGHTALT
+
+    KEY_RED = E.KEY_0
+    KEY_YELLOW = E.KEY_P
+    KEY_GREEN = E.KEY_MINUS
+    KEY_CYAN = E.KEY_LEFTBRACE
+    KEY_BLUE = E.KEY_EQUAL
+    KEY_MAGENTA = E.KEY_RIGHTBRACE
+    KEY_WHITE = E.KEY_SEMICOLON
+    KEY_BLACK = E.KEY_APOSTROPHE
+    KEY_MORE = E.KEY_BACKSLASH
+    KEY_LESS = E.KEY_BACKSPACE
+
+    # Unused:
+    #E.KEY_SLASH
+    #E.KEY_ENTER
+    
     def __init__(self): 
         self.pattern = None
 
+        self.zoom_offset = 0
+        self.zoom_level = Pattern.SEQ_LEN / 2
+        self.channel_offset = 0
+        self.channel_active = 0
+
         self.grid_rows = []
+        self.grid_marks = []
         self.grid_texts = []
         self.grid_descs = []
         self.grid_mutes = []
 
         for i in range(Pattern.CHANNELS):
+            mark = urwid.Text(">")
             txt = urwid.Text("#" * Pattern.SEQ_LEN)
             desc = urwid.Text("-")
             mute = urwid.CheckBox("", state=False)
-            row = urwid.Columns([(Pattern.SEQ_LEN, txt), (4, mute), desc])
+            row = urwid.Columns([(2, mark), (Pattern.SEQ_LEN, txt), (4, mute), desc])
             self.grid_rows.append(row)
+            self.grid_marks.append(mark)
             self.grid_texts.append(txt)
             self.grid_descs.append(desc)
             self.grid_mutes.append(mute)
 
-        self.timing_row = urwid.Text('^   .   ' * (Pattern.SEQ_LEN / 8))
+        self.timing_row = urwid.Text('')
         self.grid = urwid.Pile([('pack', r) for r in  (self.grid_rows + [self.timing_row])])
 
         self.title = urwid.Edit(caption="Title:", edit_text="Pattern 1")
         
-        speed_btns = []
+        self.speed_btns = []
         for sp in [1, 2, 4]:
-            urwid.RadioButton(speed_btns, "%dx Speed" % sp, user_data=sp)
-        self.details = urwid.Pile([self.title] + speed_btns)
+            urwid.RadioButton(self.speed_btns, "%dx Speed" % sp, user_data=sp)
+        self.details = urwid.Pile([self.title] + self.speed_btns)
         self.content = urwid.Columns([('weight', 3, self.grid), ('weight', 1, self.details)])
         self.base = urwid.LineBox(self.content)
+
+        self.update_marks(time=(0,0))
+
+    def update_marks(self, time=None):
+        # Update timing & channel marks
+        for i in range(Pattern.CHANNELS):
+            if i == self.channel_active:
+                m = ">"
+            elif self.channel_offset <= i < (self.channel_offset + 4):
+                m = ":"
+            else:
+                m = " "
+            self.grid_marks[i].set_text(m)
+
+        if time is not None:
+            beat, tick = time
+            self.time_idx = beat * 8 + (tick / 30)
+
+        time_text = []
+        for i in range(Pattern.SEQ_LEN):
+            if i == self.time_idx:
+                time_text.append("^")
+            elif i % 8 == 0:
+                time_text.append("|")
+            elif i % 4 == 0:
+                time_text.append("-")
+            elif self.zoom_offset <= i < (self.zoom_level + self.zoom_offset):
+                time_text.append("_")
+            else:
+                time_text.append(".")
+        
+        self.timing_row.set_text("  " + ''.join(time_text))
 
     def load_pattern(self, pattern=None):
         def val_to_sym(v):
@@ -299,17 +387,26 @@ class SequencingGrid(object):
 
         # Populate the grid channels & controls
         for i in range(pattern.CHANNELS):
-            self.grid_texts[i].set_text(''.join(map(pattern.data[i], val_to_sym)))
+            self.grid_texts[i].set_text(''.join(map(val_to_sym, pattern.data[i])))
             self.grid_descs[i].set_text(pattern.get_channel_description(i))
-            self.grid_mutes[i].set_state(pattern.channel_muted[i], do_callback=False)
-        self.title.set_text("Title: %s" % pattern.title)
-        for sbtn in speed_btns:
-            if pattern.speed == sbtn.user_data:
+            self.grid_mutes[i].set_state(pattern.channels_muted[i], do_callback=False)
+        self.title.set_edit_text(pattern.title)
+        for sbtn in self.speed_btns:
+            if False and pattern.speed == sbtn.user_data:
                 sbtn.toggle_state()
                 break
 
 
 class PatternGrid(object):
+    HOTKEYS = [E.KEY_F1, E.KEY_F2, E.KEY_F3, E.KEY_F4,
+               E.KEY_F5, E.KEY_F6, E.KEY_F7, E.KEY_F8,
+               E.KEY_F9, E.KEY_F10, E.KEY_F11, E.KEY_F12,
+               E.KEY_HOME, E.KEY_END, E.KEY_INSERT, E.KEY_DELETE ]
+    HOTKEY_NAMES = ["F1", "F2", "F3", "F4",
+                    "F5", "F6", "F7", "F8",
+                    "F9", "F10", "F11", "F12",
+                    "Hom", "End", "Ins", "Del" ]
+
     def __init__(self, patterns):
         self.patterns = patterns
 
@@ -374,9 +471,10 @@ class CursedLightUI(object):
         self.footer = urwid.Columns([])
         self.center = urwid.Pile([])
 
-        self.patterns = [Pattern() for i in range(10)]
+        self.patterns = [Pattern.deserialize(EXAMPLE_PATTERN_SERIALIZED) for i in range(10)]
 
         self.seqgrid = SequencingGrid()
+        self.seqgrid.load_pattern(self.patterns[0])
         self.patgrid = PatternGrid(self.patterns)
         self.settings = SettingsBox()
         self.vbody = urwid.Pile([('pack', self.seqgrid.base), self.patgrid.base])
@@ -562,6 +660,7 @@ class CursedLightUI(object):
 
     def idle_loop(self):
         tick = self.tb.tick()
+        self.seqgrid.update_marks(time=tick)
         self.ticker.set_text([('bpm_text', 'Tick: '), ('bpm', '{0}.{1:03d}'.format(*tick))])
         self.bpm.set_text([('bpm_text', 'BPM: '), ('bpm', '{: <6.01f}'.format(self.tb.bpm))])
         if tick[1] < 10:
