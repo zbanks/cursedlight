@@ -225,6 +225,11 @@ class Pattern(object):
         channel = self.channels[i]
         return "Channel %d: %s" % (i+1, str(channel)) #TODO
 
+    def tap(self, channel, beat, width=1, keyboard=True):
+        # User input to change pattern @ (channel, beat)
+        v = self.data[channel][beat]
+        self.data[channel][beat] = 1 - v
+
     def serialize(self):
         return {
             "data": self.data,
@@ -399,10 +404,17 @@ class SequencingGrid(object):
     def keyboard_event(self, event, mode=False):
         kid, ev, pressed = event
         if mode:
-            if ev.code == self.KEY_CYCLE:
-                self.channel_offset += 4
-                if self.channel_offset >= self.CHANNELS:
-                    self.channel_offset = 0
+            if ev.type == 0: #Key Up
+                if ev.code in self.KEYS_GRID:
+                    ch, bt = self.KEYS_GRID[ev.code]
+                    channel = self.channel_offset + ch
+                    beat = (self.zoom_level / 8) * bt
+                    self.pattern.tap(channel, beat, width=self.zoom_level/8, keyboard=True)
+                    self.load_pattern()
+                elif ev.code == self.KEY_CYCLE:
+                    self.channel_offset += 4
+                    if self.channel_offset >= Pattern.CHANNELS:
+                        self.channel_offset = 0
 
 
 class PatternGrid(object):
