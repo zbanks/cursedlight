@@ -204,6 +204,141 @@ class CANDeviceGroupUI(object):
         for w in [self.dev_group, self.options, self.effects]:
             self.pile.contents.append((w, self.pile.options()))
 
+class Pattern(object):
+    SEQ_LEN = 32
+    CHANNELS = 8
+    all_titles = set()
+    def __init__(self, name=None):
+        self.data = [([0] * self.SEQ_LEN) for i in range(self.CHANNELS)]
+        self.channels = [[]  for i in range(self.CHANNELS)]
+        self.channels_muted = [False] * self.CHANNELS
+        self.speed = 1
+
+        if name is None:
+            name = "Pattern #%d" % (len(self.all_titles) + 1)
+        while name in self.all_titles:
+            name += "_"
+        self.all_titles.add(name)
+        self.title = name
+
+    def get_channel_description(self, i):
+        channel = self.channels(i)
+        return "Channel %d: %s" % (i+1, str(channel)) #TODO
+
+    def serialize(self):
+        return {
+            "data": self.data,
+            "channels": self.channels,
+            "title": self.title,
+            "_seqlen": self.SEQ_LEN,
+            "_channels": self.CHANNELS
+        }
+    @classmethod
+    def deserialize(cls, d):
+        # Maybe there should be more checks. Don't mess around too much
+        if d["_seqlen"] != self.SEQ_LEN:
+            raise Exception("Unable to deserialize pattern; mismatched seqlen (should be %d)" % self.SEQ_LEN)
+        if d["_channels"] != self.CHANNELS:
+            raise Exception("Unable to deserialize pattern; mismatched channels (should be %d)" % self.CHANNELS)
+        p = cls(name=d["title"])
+        p.data = d["data"]
+        p.channels = d["channels"]
+        return p
+
+class SequencingGrid(object):
+    def __init__(self): 
+        self.pattern = None
+
+        self.grid_rows = []
+        self.grid_texts = []
+        self.grid_descs = []
+        self.grid_mutes = []
+
+        for i in range(Pattern.CHANNELS):
+            txt = urwid.Text("#" * Pattern.SEQ_LEN)
+            desc = urwid.Text("-")
+            mute = urwid.CheckBox("", state=False)
+            row = urwid.Columns([(Pattern.SEQ_LEN, txt), (4, mute), desc])
+            self.grid_rows.append(row)
+            self.grid_texts.append(txt)
+            self.grid_descs.append(desc)
+            self.grid_mutes.append(mute)
+
+        self.timing_row = urwid.Text('^   .   ' * (Pattern.SEQ_LEN / 8))
+        self.grid = urwid.Pile([('pack', r) for r in  (self.grid_rows + [self.timing_row])])
+
+        self.title = urwid.Edit(caption="Title:", edit_text="Pattern 1")
+        
+        speed_btns = []
+        for sp in [1, 2, 4]:
+            urwid.RadioButton(speed_btns, "%dx Speed" % sp, user_data=sp)
+        self.details = urwid.Pile([self.title] + speed_btns)
+        self.content = urwid.Columns([('weight', 3, self.grid), ('weight', 1, self.details)])
+        self.base = urwid.LineBox(self.content)
+
+    def load_pattern(self, pattern=None):
+        def val_to_sym(v):
+            # Convert a value at a point in time on a channel to a single char
+            SYMBOLS = {
+                0: "-",
+                1: "#",
+                2: "+",
+                3: "'",
+                "t": ">",
+                "else": "?"
+            }
+            return SYMBOLS.get(v, SYMBOLS["else"])
+        # Load pattern passed in as argument
+        # Otherwise use self.pattern & refresh, otherwise exit
+        if pattern is not None:
+            self.pattern = pattern
+        elif self.pattern is not None:
+            pattern = self.pattern
+        else:
+            return
+
+        # Populate the grid channels & controls
+        for i in range(pattern.CHANNELS):
+            self.grid_texts[i].set_text(''.join(map(pattern.data[i], val_to_sym)))
+            self.grid_descs[i].set_text(pattern.get_channel_description(i))
+            self.grid_mutes[i].set_state(pattern.channel_muted[i], do_callback=False)
+        self.title.set_text("Title: %s" % pattern.title)
+        for sbtn in speed_btns:
+            if pattern.speed == sbtn.user_data:
+                sbtn.toggle_state()
+                break
+
+
+class PatternGrid(object):
+    def __init__(self, patterns):
+        self.patterns = patterns
+
+        self.new_pattern = urwid.LineBox(urwid.Padding(urwid.Text("New")))
+        self.content = urwid.GridFlow([], 16, 1, 1, 'center')
+        self.base = urwid.LineBox(urwid.Filler(self.content))
+
+        self.rebuild_buttons()
+    
+    def make_button(self, pattern):
+#return urwid.LineBox(urwid.SolidFill("."))
+        return urwid.LineBox(urwid.Padding(urwid.Text(pattern.title)))
+
+    def make_new_button(self):
+        return urwid.LineBox(urwid.Padding(urwid.Text("New")))
+
+    def rebuild_buttons(self):
+        btns = []
+        for pattern in self.patterns:
+            btns.append((self.make_button(pattern), self.content.options()))
+        btns.append((self.make_new_button(), self.content.options()))
+        self.content.contents = btns
+
+
+class SettingsBox(object):
+    def __init__(self):
+        self.content = urwid.Pile([])
+        self.base = urwid.LineBox(self.content)
+
 class CursedLightUI(object):
     """
     My abstraction for what belongs in this class vs. other classes has totally
@@ -237,7 +372,15 @@ class CursedLightUI(object):
 
         self.header = urwid.Columns([])
         self.footer = urwid.Columns([])
-        self.body = urwid.Columns([])
+        self.center = urwid.Pile([])
+
+        self.patterns = [Pattern() for i in range(10)]
+
+        self.seqgrid = SequencingGrid()
+        self.patgrid = PatternGrid(self.patterns)
+        self.settings = SettingsBox()
+        self.vbody = urwid.Pile([('pack', self.seqgrid.base), self.patgrid.base])
+        self.body = urwid.Columns([('weight', 5, self.vbody), ('weight', 1, self.settings.base)])
 
         self.loop.widget.original_widget = urwid.Frame(body=self.body, header=self.header, footer=self.footer)
 
@@ -251,7 +394,7 @@ class CursedLightUI(object):
         self.footer.contents.append((self.bpm, self.footer.options()))
         self.footer.contents.append((self.ticker, self.footer.options()))
 
-        self.setup_devices()
+#self.setup_devices()
 
         self.keypress_master = {
             E.KEY_E: lambda ev: self.tb.quantize(),
@@ -270,14 +413,6 @@ class CursedLightUI(object):
             if ev.code in self.keypress_master:
                 self.keypress_master[ev.code](ev)
 
-    def iron_curtain_kbd_handler(self, event, icui):
-        kid, ev, pressed = event
-        if ev.value == 1 and ev.code == E.KEY_G:
-            self.effects_runner.iron_curtain.change_scene(0)
-
-    def iron_curtain_ui_handler(self, new_scene):
-        logger.debug("Change Iron Curtain scene: %d", new_scene)
-        self.effects_runner.iron_curtain.change_scene(new_scene)
 
     def can_device_kbd_handler(self, event, dgui, devs):
         def toggle_effect(eff_name, *args, **kwargs):

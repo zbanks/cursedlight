@@ -4,10 +4,11 @@ CAN_DEVICE_GROUPS = {
     "Ambient":{
         0x0003: "Hallways"
     },
-    "Debug 1":{
-        0x0001: "Debugging sucks 1",
-#0x0000: "Debugging sucks 0"
-    },
+
+#    "Debug 1":{
+#        0x0001: "Debugging sucks 1",
+##0x0000: "Debugging sucks 0"
+#    },
 #    "Left Dig": {
 #        0x0000: "D left0",
 #        0x0011: "D left1",
