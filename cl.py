@@ -1,18 +1,17 @@
 import Queue
-import asyncore
 import collections
 import evdev
 import logging
-import serial
 import sys
 import threading
 import traceback
-import time
 import urwid
 
 from effects import *
 from config import *
-from curtain import BeatBlaster
+from inputs import *
+from timing import *
+from devices import *
 from evdev import ecodes as E
 
 logging.basicConfig(filename="/tmp/cl.log", level=logging.DEBUG)
@@ -24,54 +23,6 @@ def exception_handler(type, value, tb):
 
 sys.excepthook = exception_handler
 
-
-# List of all can devices
-CAN_DEVICES = dict(reduce(lambda acc, val: acc + val.items(), CAN_DEVICE_GROUPS.values(), []))
-
-# Multicast
-CAN_DEVICES[CAN_ALL_ADDRESS] = "(All)"
-
-class CanBus(object):
-    """
-    Abstraction for sending data at the hardware level.
-    """
-    CMD_TICK = 0x80
-    CMD_RESET = 0x83
-    CMD_REBOOT = 0x83
-    CMD_MSG = 0x81
-    CMD_STOP = 0x82
-    CMD_PARAM = 0x85
-
-    def __init__(self, port, baudrate=115200):
-        self.ser = serial.Serial(port, baudrate)
-        self.addresses = {}
-
-    def raw_packet(self, data):
-        logger.debug("CAN data: %s", ';'.join(map(lambda x: "{:02x}".format(x), data)))
-        self.ser.write("".join([chr(d) for d in data]))
-        time.sleep(0.0001)
-
-    def can_packet(self, addr, can_data):
-        if addr not in self.addresses:
-            self.addresses[addr] = "(Unknown)"
-#can_data = (can_data + [0] * 8)[:8]
-        # Format is: [ADDR_H, ADDR_L, LEN, (data), 0xFF]
-        data = [addr & 0xff, (addr >> 8) & 0xff, len(can_data)] + can_data + [0xff]
-        self.raw_packet(data)
-
-    def send_to_all(self, can_data):
-        self.can_packet(CAN_ALL_ADDRESS, can_data)
-
-class FakeCanBus(CanBus):
-    """
-    ...and sometimes there isn't a hardware level.
-    """
-    def __init__(self, port, baudrate=115200):
-        self.addresses = {}
-        logger.debug("Setup fake can bus: %s @ %d baud", port, baudrate)
-
-    def raw_packet(self, data):
-        logger.debug("CAN data: %s", ':'.join(map(lambda x: "{:02x}".format(x), data)))
 
 class EffectsRunner(object):
     """
@@ -188,161 +139,6 @@ class EffectsRunner(object):
         logger.warning("No space for effect, using 0xff")
         return 0xff
 
-class Timebase(object):
-    """
-    Keep track of timing
-    `beat` - 0-indexed number of full beats since the downbeat. Counts up to `self.beats`,
-             usually 4. Ex: "ONE two three four ONE two three four" -> [0, 1, 2, 3, 0, 1, 2, 3]
-    `frac` - 0-indexed number of fractional beats since the last beat. Counts up to `self.fracs`
-             usually 240.
-    `tick` - A tuple, `(beat, frac)`.
-    """
-    # Thanks @ervanalb !
-    def __init__(self):
-        self.fracs = 240
-        self.beats = 4
-        self.taps = []
-        self.beat = -1
-        self.period = 0.5
-        self.nextTick = time.time()
-
-    def update(self, t):
-        if t>=self.nextTick:
-            self.lastTick=self.nextTick
-            self.nextFracTick=self.nextTick
-            self.nextTick+=self.period
-            self.frac=-1
-            self.beat+=1
-            if self.beat>=self.beats:
-                self.beat=0
-        if t>=self.nextFracTick:
-            real_frac=int(self.fracs*(t-self.lastTick)/self.period)
-            if real_frac<self.fracs and real_frac>self.frac:
-                self.frac=real_frac
-            self.nextFracTick=self.lastTick+float(real_frac+1)*self.period/self.fracs
-
-    def sync(self, t):
-        if abs(t-self.nextTick) < abs(t-self.lastTick):
-            self.beat=-1
-            self.nextTick=t
-        else:
-            self.beat=0
-            self.nextTick=t+self.period
-
-    def nudge(self, t):
-        self.period = 60.0 / (self.bpm + t)
-
-    def tap(self, t):
-        self.taps.append(t)
-        self.taps=[tap for tap in self.taps if tap > t-2][0:5] # Take away everything older than 2sec or more than 5 history
-        diffs=[self.taps[i]-self.taps[i-1] for i in range(1,len(self.taps))] # First differences
-        if len(diffs)==0:
-                return
-        mean=sum(diffs)/len(diffs)
-        self.period=mean
-
-    def quantize(self,nearest=2):
-        bpm=60.0/self.period
-        qbpm=nearest*round(bpm/nearest)
-#print "Changed from",bpm,"to",qbpm
-        self.period = 60.0 / qbpm
-        return qbpm
-
-    @property
-    def bpm(self):
-        return 60.0 / self.period
-
-    def multiply(self,factor):
-        self.period/=factor
-        if self.bpm > 500 or self.bpm < 20:
-            # Undo; set limits
-            self.period *= factor
-
-    def tick(self):
-        self.update(time.time())
-        return (self.beat, self.frac)
-
-class AsyncRawKeyboard(threading.Thread):
-    """
-    Poll the "/dev/input/event*" object in a thread and add 
-    new events to the `kbd_evts` queue. 
-    If `grab` is True, then keyboard events are not propegated to the rest of the system.
-    """
-    # Why aren't these defined in evdev.ecodes!? :(
-
-    KEY_UP = 0
-    KEY_DOWN = 1
-    KEY_HOLD = 2
-    def __init__(self, dev_input, kid, kbd_evts, grab=True):
-        self.dev = evdev.InputDevice(dev_input)
-        if evdev.ecodes.EV_KEY in self.dev.capabilities() and evdev.ecodes.EV_LED in self.dev.capabilities():
-            self.is_keyboard = True
-            self.kid = kid
-            self.kbd_evs = kbd_evts
-            self.running = True
-            self.grab = grab
-            self.pressed = set()
-            if self.grab:
-                self.dev.grab()
-            threading.Thread.__init__(self)
-        else:
-            self.is_keyboard = False
-            self.running = False
-
-    def run(self):
-        for ev in self.dev.read_loop():
-            if not self.running:
-                return
-            if ev.type == evdev.ecodes.EV_KEY:
-                if ev.value == self.KEY_DOWN:
-                    self.pressed.add(ev.code)
-                if ev.value == self.KEY_UP:
-                    self.pressed.discard(ev.code)
-                self.kbd_evs.put((self.kid, ev, self.pressed))
-
-    def stop(self):
-        self.running = False
-        if self.grab:
-            self.dev.ungrab()
-        self.join()
-
-class Keyboards(object):
-    """
-    Abstract away all the connected keyboards into a single object
-    Exposes `events`, instance of Queue.Queue, containing the events from all 
-    the keyboard objects.
-    """
-
-    def __init__(self):
-        self.events = Queue.Queue()
-        self.kbds = []
-        # Detect which things in /dev/input/event* are keyboards
-        dograb = False
-        for path in evdev.list_devices()[::-1]:
-            kbd = AsyncRawKeyboard(path, len(self.kbds), self.events, grab=dograb)
-            dograb = True
-            if not kbd.is_keyboard:
-                continue
-            self.kbds.append(kbd)
-            kbd.start()
-
-    def stop(self):
-        [k.stop() for k in self.kbds]
-
-    def set_leds(self, kbd, num=None, caps=None, scroll=None):
-        if num is not None:
-            num = 1 if num else 0
-            kbd.dev.set_led(evdev.ecodes.LED_NUML, num)
-        if caps is not None:
-            caps = 1 if caps else 0
-            kbd.dev.set_led(evdev.ecodes.LED_CAPSL, caps)
-        if scroll is not None:
-            scroll = 1 if scroll else 0
-            kbd.dev.set_led(evdev.ecodes.LED_SCROLLL, scroll)
-
-    def set_all_leds(self, **kwargs):
-        for k in self.kbds:
-            self.set_leds(k, **kwargs)
 
 class CustomSelectEventLoop(urwid.SelectEventLoop):
     """
@@ -666,8 +462,8 @@ def main():
 #keyboards.set_leds(True, True, True)
         time.sleep(0.5)
 #keyboards.set_leds(False,False,False)
-#bus = FakeCanBus("/dev/ttyUSB0", 115200)
-        bus = CanBus("/dev/ttyUSB0", 115200)
+        bus = FakeCanBus("/dev/ttyUSB0", 115200)
+#bus = CanBus("/dev/ttyUSB0", 115200)
         effects_runner = EffectsRunner(bus)
         [effects_runner.add_device(*dev) for dev in CAN_DEVICES.items()]
         ui = CursedLightUI(keyboards, effects_runner)

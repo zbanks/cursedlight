@@ -1,6 +1,6 @@
-import urwid
 import colorsys
 import logging
+import urwid
 
 logging.basicConfig(filename="/tmp/cl.log", level=logging.DEBUG)
 logger = logging.getLogger(__name__)
