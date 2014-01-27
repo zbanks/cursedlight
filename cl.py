@@ -396,10 +396,10 @@ class SequencingGrid(object):
                 sbtn.toggle_state()
                 break
 
-    def keyboard_event(self, ev, mode=False):
+    def keyboard_event(self, event, mode=False):
         kid, ev, pressed = event
         if mode:
-            if ev.code = self.KEY_CYCLE:
+            if ev.code == self.KEY_CYCLE:
                 self.channel_offset += 4
                 if self.channel_offset >= self.CHANNELS:
                     self.channel_offset = 0
@@ -438,16 +438,16 @@ class PatternGrid(object):
         btns.append((self.make_new_button(), self.content.options()))
         self.content.contents = btns
 
-    def keyboard_event(self, ev, mode=False):
-        pass
+    def keyboard_event(self, event, mode=False):
+        kid, ev, pressed = event
 
 
 class SettingsBox(object):
     def __init__(self):
         self.content = urwid.Pile([])
         self.base = urwid.LineBox(self.content)
-    def keyboard_event(self, ev, mode=False):
-        pass
+    def keyboard_event(self, event, mode=False):
+        kid, ev, pressed = event
 
 class CursedLightUI(object):
     """
@@ -472,7 +472,7 @@ class CursedLightUI(object):
         self.effects_runner = effects_runner
         self.running = True
 
-        self.mode = MODE_PAT
+        self.mode = self.MODE_PAT
         self.last_tick = (0, 0)
 
         evloop = CustomSelectEventLoop()
@@ -532,9 +532,9 @@ class CursedLightUI(object):
             if ev.code == self.KEY_MODE:
                 self.mode = 1 - self.mode
         
-        self.patgrid.keyboard_ev(event, mode=self.mode==self.MODE_PAT)
-        self.seqgrid.keyboard_ev(event, mode=self.mode==self.MODE_SEQ)
-        self.settings.keyboard_ev(event, mode=False
+        self.patgrid.keyboard_event(event, mode=self.mode==self.MODE_PAT)
+        self.seqgrid.keyboard_event(event, mode=self.mode==self.MODE_SEQ)
+        self.settings.keyboard_event(event, mode=False)
 
 
     def can_device_kbd_handler(self, event, dgui, devs):
