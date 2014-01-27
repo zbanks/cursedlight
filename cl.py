@@ -396,6 +396,14 @@ class SequencingGrid(object):
                 sbtn.toggle_state()
                 break
 
+    def keyboard_event(self, ev, mode=False):
+        kid, ev, pressed = event
+        if mode:
+            if ev.code = self.KEY_CYCLE:
+                self.channel_offset += 4
+                if self.channel_offset >= self.CHANNELS:
+                    self.channel_offset = 0
+
 
 class PatternGrid(object):
     HOTKEYS = [E.KEY_F1, E.KEY_F2, E.KEY_F3, E.KEY_F4,
@@ -430,11 +438,16 @@ class PatternGrid(object):
         btns.append((self.make_new_button(), self.content.options()))
         self.content.contents = btns
 
+    def keyboard_event(self, ev, mode=False):
+        pass
+
 
 class SettingsBox(object):
     def __init__(self):
         self.content = urwid.Pile([])
         self.base = urwid.LineBox(self.content)
+    def keyboard_event(self, ev, mode=False):
+        pass
 
 class CursedLightUI(object):
     """
@@ -448,12 +461,18 @@ class CursedLightUI(object):
         ('status', '', '', '', '#333', '#ddd'),
         ('status', '', '', '', '#333', '#ddd'),
     ]
+
+    KEY_MODE = E.KEY_SPACE
+    MODE_PAT = 0
+    MODE_SEQ = 1
+
     def __init__(self, keyboards, effects_runner):
         self.tb = Timebase()
         self.keyboards = keyboards
         self.effects_runner = effects_runner
         self.running = True
 
+        self.mode = MODE_PAT
         self.last_tick = (0, 0)
 
         evloop = CustomSelectEventLoop()
@@ -510,6 +529,12 @@ class CursedLightUI(object):
         if ev.value == 1: #T down
             if ev.code in self.keypress_master:
                 self.keypress_master[ev.code](ev)
+            if ev.code == self.KEY_MODE:
+                self.mode = 1 - self.mode
+        
+        self.patgrid.keyboard_ev(event, mode=self.mode==self.MODE_PAT)
+        self.seqgrid.keyboard_ev(event, mode=self.mode==self.MODE_SEQ)
+        self.settings.keyboard_ev(event, mode=False
 
 
     def can_device_kbd_handler(self, event, dgui, devs):
