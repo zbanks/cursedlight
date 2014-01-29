@@ -82,10 +82,10 @@ class StrobeChannel(Channel):
             return 
         if value:
             if self.last_on is None:
-                self.device.bespeckle_msg_effect(self.bespeckle_id, self.color_rgba)
+                self.device.bespeckle_msg_effect(self.bespeckle_id, self.color_rgba + [0x0, 0x03])
             self.last_on = time
         elif self.last_on is not None and Timebase.difference(self.last_on, time) > self.width:
-            self.device.bespeckle_msg_effect(self.bespeckle_id, RGBA["clear"])
+            self.device.bespeckle_msg_effect(self.bespeckle_id, RGBA["clear"] + [0x0, 0x82])
             self.last_on = None
 
     def stop(self):

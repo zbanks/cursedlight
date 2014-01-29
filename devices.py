@@ -58,14 +58,30 @@ class SingleBespeckleDevice(object):
     def raw_packet(self, data):
         logger.debug("Serial Data: %s", ';'.join(map(lambda x: "{:02x}".format(x), data)))
         self.ser.write("".join([chr(d) for d in data]))
+        time.sleep(0.0001) #XXX
 
-    def framed_packet(self, data):
-        if len(data) > 8:
-            raise Exception("packets must be 8 bytes long for some reason")
+    def cobs_packet(self, data):
+        rdata = []
+        i = 0
+        for d in data[::-1]:
+            i += 1
+            if d == 0:
+                rdata.append(i)
+                i = 0
+            else:
+                rdata.append(d)
+        self.raw_packet([0, i] + rdata[::-1])
+        
+
+    def framed_packet(self, data=None, flags=0x00, addr=0x00):
+        if data is None or len(data) > 250:
+            raise Exception("invalid data")
         while len(data) < 8:
             data.append(0)
-        checksum = sum(data) & 0xff
-        self.raw_packet([0x55] + data + [checksum])
+        crc_frame = [flags, addr] + data
+        checksum = sum(crc_frame) & 0xff
+        frame = [len(data), checksum] + crc_frame
+        self.cobs_packet(frame)
 
     def _get_next_id(self):
         for i in range(256):
@@ -113,44 +129,3 @@ class FakeSingleBespeckleDevice(SingleBespeckleDevice):
         logger.debug("Data: %s", ';'.join(map(lambda x: "{:02x}".format(x), data)))
         time.sleep(0.001)
 
-class CanBus(object):
-    """
-    Abstraction for sending data at the hardware level.
-    """
-    CMD_TICK = 0x80
-    CMD_RESET = 0x83
-    CMD_REBOOT = 0x83
-    CMD_MSG = 0x81
-    CMD_STOP = 0x82
-    CMD_PARAM = 0x85
-
-    def __init__(self, port, baudrate=115200):
-        self.ser = serial.Serial(port, baudrate)
-        self.addresses = {}
-
-    def raw_packet(self, data):
-        logger.debug("CAN data: %s", ';'.join(map(lambda x: "{:02x}".format(x), data)))
-        self.ser.write("".join([chr(d) for d in data]))
-        time.sleep(0.0001)
-
-    def can_packet(self, addr, can_data):
-        if addr not in self.addresses:
-            self.addresses[addr] = "(Unknown)"
-#can_data = (can_data + [0] * 8)[:8]
-        # Format is: [ADDR_H, ADDR_L, LEN, (data), 0xFF]
-        data = [addr & 0xff, (addr >> 8) & 0xff, len(can_data)] + can_data + [0xff]
-        self.raw_packet(data)
-
-    def send_to_all(self, can_data):
-        self.can_packet(CAN_ALL_ADDRESS, can_data)
-
-class FakeCanBus(CanBus):
-    """
-    ...and sometimes there isn't a hardware level.
-    """
-    def __init__(self, port, baudrate=115200):
-        self.addresses = {}
-        logger.debug("Setup fake can bus: %s @ %d baud", port, baudrate)
-
-    def raw_packet(self, data):
-        logger.debug("CAN data: %s", ':'.join(map(lambda x: "{:02x}".format(x), data)))

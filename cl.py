@@ -530,6 +530,9 @@ class CursedLightUI(object):
 
         self.patterns = [Pattern.new_template(self.device_manager) for i in range(10)]
         self.patterns[0].channels[0] = StrobeChannel(self.device_manager.devices[0], RGBA["red"])
+        self.patterns[0].channels[1] = StrobeChannel(self.device_manager.devices[0], RGBA["green"])
+        self.patterns[0].channels[2] = StrobeChannel(self.device_manager.devices[0], RGBA["blue"])
+        self.patterns[0].channels[3] = StrobeChannel(self.device_manager.devices[0], RGBA["white"])
 
         self.seqgrid = SequencingGrid(self)
         self.seqgrid.load_pattern(self.patterns[0])
@@ -676,7 +679,8 @@ def main():
 #keyboards.set_leds(False,False,False)
         #bus = FakeCanBus("/dev/ttyUSB0", 115200)
 #bus = CanBus("/dev/ttyUSB0", 115200)
-        led_strip = FakeSingleBespeckleDevice("/dev/ttyUSB0", 115200)
+        #led_strip = FakeSingleBespeckleDevice("/dev/ttyUSB0", 115200)
+        led_strip = SingleBespeckleDevice("/dev/ttyUSB0", 115200)
         device_manager = DeviceManager([led_strip])
         #effects_runner = EffectsRunner(bus)
         #[effects_runner.add_device(*dev) for dev in CAN_DEVICES.items()]
