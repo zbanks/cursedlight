@@ -89,7 +89,7 @@ class Effect(object):
         - Keep track of `canbus`, `device_ids`, etc.
         - Set start/stopped state
         - Call `self.init(...)` *** Override `.init(self, *args, **kwargs)` not `.__init__`!
-        - Call `self.start()`
+        #- Call `self.start()`
         - Create a UI element to represent it
 
         For the sake of my sanity: the unique_id is the same for each device. 
@@ -104,9 +104,9 @@ class Effect(object):
         self.init(*args, **kwargs)
         self.ui = self.ui_class(self)
 
-        self.start()
-
-        self.started = True
+        #self.start()
+        #self.started = True
+        self.started = False
 
     def _msg_device(self, device_id, data):
         # Send a message to a single device

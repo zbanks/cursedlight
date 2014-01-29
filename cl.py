@@ -1,5 +1,6 @@
 import Queue
 import collections
+import copy
 import evdev
 import logging
 import sys
@@ -7,12 +8,15 @@ import threading
 import traceback
 import urwid
 
-from effects import *
+from evdev import ecodes as E
+
+from channels import *
 from config import *
+from devices import *
+from effects import *
 from inputs import *
 from timing import *
-from devices import *
-from evdev import ecodes as E
+
 
 logging.basicConfig(filename="/tmp/cl.log", level=logging.DEBUG)
 logger = logging.getLogger(__name__)
@@ -22,122 +26,7 @@ def exception_handler(type, value, tb):
     logger.exception(traceback.print_traceback(tb))
 
 sys.excepthook = exception_handler
-
-
-class EffectsRunner(object):
-    """
-    Maintain which effects are running on which devices.
-    Keep up with tick events.
-    This may end up being CAN-specific???
-    I think I need to rexamine my life choices.
-    """
-    def __init__(self, canbus):
-        self.canbus = canbus
-        self.last_tick = (0,0)
-        self.canbus.send_to_all([self.canbus.CMD_RESET, 0, 0,0,0, 0,0,0])
-        for i, gc in enumerate(GLOBAL_CALIBRATION):
-            self.canbus.send_to_all([self.canbus.CMD_PARAM, i, int(255.0 * gc) ,0,0, 0,0,0])
-        # self.effects :: {address ->  {id -> Effect}}
-        self.effects = collections.defaultdict(dict)
-        self.effects_named = {}
-        if IRON_CURTAIN_ENABLED:
-            self.iron_curtain = BeatBlaster(IRON_CURTAIN_ADDR)
-
-    def tick(self, tick):
-        if tick == self.last_tick:
-            return None
-        beat, fractick = tick
-        if tick[0] != self.last_tick[0]:
-            fractick = 0
-            if IRON_CURTAIN_ENABLED and fractick % IRON_CURTAIN_FT == 0:
-                self.iron_curtain.beat(beat)
-        if IRON_CURTAIN_ENABLED:
-            self.iron_curtain.sub_beat(beat, fractick)
-
-        tick = (beat, fractick)
-        # XXX: disabled to not clog up the logs
-        if SEND_BEATS and (fractick % FRACTICK_FRAC) == 0:
-            self.canbus.send_to_all([self.canbus.CMD_TICK, fractick])
-        
-        # Maybe the effects want to do something?
-        for eff in self.effects_named.values():
-            eff.tick(tick)
-
-        self.last_tick = tick
-
-    def reset_device(self, uid):
-        self.canbus.can_packet(uid, [self.canbus.CMD_RESET])
-        for i, gc in enumerate(CAN_DEVICE_CALIBRATION.get(uid, GLOBAL_CALIBRATION)):
-            self.canbus.send_to_all([self.canbus.CMD_PARAM, i, int(255.0 * gc) ,0,0, 0,0,0])
-        effs = self.effects[uid]
-        for eff in effs.values():
-            try:
-                self.effects_named.pop(eff.name)
-            except KeyError:
-                pass
-        self.effects[uid] = {}
-
-    def add_device(self, uid, name):
-        self.canbus.addresses[uid] = name
-
-    def add_effect(self, name, effect, addresses, *args, **kwargs):
-        """
-        Add an effect:
-        - Generate an appropriate uid for the effect that isn't already in use
-        - Send the effect data out to all the devices
-        - Attach the effect to the internal list of effects
-        - Return the `effect` instance
-        """
-        uid = self.get_available_uid(addresses)
-        logger.debug("Putting effect %s in uid %02x", str(effect), uid)
-        eff = effect(self.canbus, addresses, uid, *args, **kwargs)
-        eff.name = name
-
-        for add in addresses:
-            self.effects[add][uid] = eff
-
-        self.effects_named[name] = eff
-        return eff
-
-    def msg_effect(self, name, data):
-        eff = self.effects_named[name]
-        eff.msg(data)
-
-    def stop_effect(self, name):
-        if name not in self.effects_named:
-            return None
-        eff = self.effects_named.pop(name)
-        logger.debug(self.effects)
-
-        for add in eff.device_ids:
-            self.effects[add].pop(eff.unique_id)
-
-        eff.stop()
-        return eff
-
-    def effect_name_exists(self, name):
-        return name in self.effects_named
-
-    def prune_effects(self):
-        # Removed stopped effects
-        # Sort of shitty, but meh
-        logger.warning("DEPRECATED: prune_effects")
-        for add in addresses:
-            for uid in self.effects[add]:
-                if self.effects[add][uid].stopped:
-                    self.effects[add].pop(uid)
-
-    def get_available_uid(self, addresses):
-        # There's only 256 to try and I'm lazy. Brute force ftw
-        for i in range(256):
-            for add in addresses:
-                if i in self.effects[add]:
-                    break
-            else:
-                return i
-        # Failure: just overwrite 0xff
-        logger.warning("No space for effect, using 0xff")
-        return 0xff
+debug = lambda s: s
 
 
 class CustomSelectEventLoop(urwid.SelectEventLoop):
@@ -208,11 +97,14 @@ class Pattern(object):
     SEQ_LEN = 32
     CHANNELS = 8
     all_titles = set()
-    def __init__(self, name=None):
+    def __init__(self, device_manager, name=None):
+        self.device_manager = device_manager
         self.data = [([0] * self.SEQ_LEN) for i in range(self.CHANNELS)]
         self.channels = [[]  for i in range(self.CHANNELS)]
         self.channels_muted = [False] * self.CHANNELS
         self.speed = 1
+        self.active = False
+        self.keybinding = (None, None)
 
         if name is None:
             name = "Pattern #%d" % (len(self.all_titles) + 1)
@@ -230,6 +122,26 @@ class Pattern(object):
         v = self.data[channel][beat]
         self.data[channel][beat] = 1 - v
 
+    def toggle(self):
+        self.active = not self.active
+        if self.active:
+            for channel in self.channels:
+                if channel is not None:
+                    channel.start()
+                    debug("STARTED")
+        else:
+            for channel in self.channels:
+                if channel is not None:
+                    channel.stop()
+
+    def tick(self, time):
+        beat, tick = time
+        step = Timebase.scale(time, self.SEQ_LEN)
+        for channel, data in zip(self.channels, self.data):
+            if channel is not None:
+                #debug(data[step])
+                channel.tick(time, data[step])
+
     def serialize(self):
         return {
             "data": self.data,
@@ -246,17 +158,69 @@ class Pattern(object):
         if d["_channels"] != cls.CHANNELS:
             raise Exception("Unable to deserialize pattern; mismatched channels (should be %d)" % self.CHANNELS)
         p = cls(name=d["title"])
-        p.data = d["data"]
-        p.channels = d["channels"]
+        p.data = copy.deepcopy(d["data"])
+        p.channels = copy.deepcopy(d["channels"])
+        return p
+
+    @classmethod
+    def new_template(cls, device_manager):
+        p = cls(device_manager, name="New Pattern")
+        p.data = [[0] * 32 for i in range(8)]
+        p.channels = [None] * 8
         return p
 
 EXAMPLE_PATTERN_SERIALIZED = {
-    "data": [[1,0,0,0] * 8, [1,0] * 16, [0,0,1,0,0,1,0,1] * 4] + [[0] * 32 for i in range(5)],
+    #"data": [[1,0,0,0] * 8, [1,0] * 16, [0,0,1,0,0,1,0,1] * 4] + [[0] * 32 for i in range(5)],
+    "data": [[0] * 32 for i in range(8)],
     "channels": ["Ch"] * 8,
     "title": "Ex. Pattern",
     "_seqlen": Pattern.SEQ_LEN,
     "_channels": Pattern.CHANNELS
 }
+
+class PatternText(urwid.WidgetWrap):
+    def __init__(self, pattern=None, index=None, data=None):
+        if data is not None:
+            data = []
+        self.data = data
+        self.pattern = pattern
+        self.index = index
+
+        super(PatternText, self).__init__(urwid.Text(''))
+        self.update()
+
+    def update(self, pattern=None, index=None, data=None):
+        if pattern is not None:
+            self.pattern = pattern
+        if index is not None and self.pattern is not None:
+            self.index = index
+        elif data is not None:
+            self.data = data
+            self.index = None
+
+        if self.index is not None and self.pattern is not None:
+            self.data = self.pattern.data[self.index]
+
+        def val_to_sym(v):
+            # Convert a value at a point in time on a channel to a single char
+            SYMBOLS = {
+                0: "-",
+                1: "#",
+                2: "+",
+                3: "'",
+                "t": ">",
+                "else": "?"
+            }
+            return SYMBOLS.get(v, SYMBOLS["else"])
+
+        if self.data is not None:
+            self._w.set_text(''.join(map(val_to_sym, self.data)))
+
+    def mouse_event(self, size, event, button, col, row, focus):
+        if self.pattern is not None and self.index is not None:
+            if event in ("mouse press", "mouse drag"):
+                self.pattern.tap(self.index, col, keyboard=False)
+                self.update()
 
 class SequencingGrid(object):
     # Keys 1-8; Q-I; A-K; Z-, form a grid 
@@ -299,11 +263,12 @@ class SequencingGrid(object):
     #E.KEY_SLASH
     #E.KEY_ENTER
     
-    def __init__(self): 
+    def __init__(self, mainui): 
         self.pattern = None
+        self.mainui = mainui
 
         self.zoom_offset = 0
-        self.zoom_level = Pattern.SEQ_LEN / 2
+        self.zoom_level = Pattern.SEQ_LEN 
         self.channel_offset = 0
         self.channel_active = 0
 
@@ -312,18 +277,27 @@ class SequencingGrid(object):
         self.grid_texts = []
         self.grid_descs = []
         self.grid_mutes = []
+        self.grid_clears= []
+
+        def grid_clear_click(btn, user_data):
+            if self.pattern is not None:
+                self.pattern.data[user_data] = [0] * Pattern.SEQ_LEN
+                self.grid_texts[user_data].update()
 
         for i in range(Pattern.CHANNELS):
             mark = urwid.Text(">")
-            txt = urwid.Text("#" * Pattern.SEQ_LEN)
+            #txt = urwid.Text("#" * Pattern.SEQ_LEN)
+            txt = PatternText()
             desc = urwid.Text("-")
             mute = urwid.CheckBox("", state=False)
-            row = urwid.Columns([(2, mark), (Pattern.SEQ_LEN, txt), (4, mute), desc])
+            clear = urwid.Button("", grid_clear_click, user_data=i)
+            row = urwid.Columns([(2, mark), (Pattern.SEQ_LEN, txt), (6, clear), (4, mute), desc])
             self.grid_rows.append(row)
             self.grid_marks.append(mark)
             self.grid_texts.append(txt)
             self.grid_descs.append(desc)
             self.grid_mutes.append(mute)
+            self.grid_clears.append(clear)
 
         self.timing_row = urwid.Text('')
         self.grid = urwid.Pile([('pack', r) for r in  (self.grid_rows + [self.timing_row])])
@@ -335,7 +309,7 @@ class SequencingGrid(object):
             urwid.RadioButton(self.speed_btns, "%dx Speed" % sp, user_data=sp)
         self.details = urwid.Pile([self.title] + self.speed_btns)
         self.content = urwid.Columns([('weight', 3, self.grid), ('weight', 1, self.details)])
-        self.base = urwid.LineBox(self.content)
+        self.base = urwid.AttrMap(urwid.LineBox(self.content), 'inactive_window')
 
         self.update_marks(time=(0,0))
 
@@ -370,17 +344,6 @@ class SequencingGrid(object):
         self.timing_row.set_text("  " + ''.join(time_text))
 
     def load_pattern(self, pattern=None):
-        def val_to_sym(v):
-            # Convert a value at a point in time on a channel to a single char
-            SYMBOLS = {
-                0: "-",
-                1: "#",
-                2: "+",
-                3: "'",
-                "t": ">",
-                "else": "?"
-            }
-            return SYMBOLS.get(v, SYMBOLS["else"])
         # Load pattern passed in as argument
         # Otherwise use self.pattern & refresh, otherwise exit
         if pattern is not None:
@@ -392,7 +355,7 @@ class SequencingGrid(object):
 
         # Populate the grid channels & controls
         for i in range(pattern.CHANNELS):
-            self.grid_texts[i].set_text(''.join(map(val_to_sym, pattern.data[i])))
+            self.grid_texts[i].update(pattern=pattern, index=i)
             self.grid_descs[i].set_text(pattern.get_channel_description(i))
             self.grid_mutes[i].set_state(pattern.channels_muted[i], do_callback=False)
         self.title.set_edit_text(pattern.title)
@@ -404,44 +367,97 @@ class SequencingGrid(object):
     def keyboard_event(self, event, mode=False):
         kid, ev, pressed = event
         if mode:
-            if ev.type == 0: #Key Up
-                if ev.code in self.KEYS_GRID:
-                    ch, bt = self.KEYS_GRID[ev.code]
-                    channel = self.channel_offset + ch
-                    beat = (self.zoom_level / 8) * bt
-                    self.pattern.tap(channel, beat, width=self.zoom_level/8, keyboard=True)
-                    self.load_pattern()
-                elif ev.code == self.KEY_CYCLE:
-                    self.channel_offset += 4
-                    if self.channel_offset >= Pattern.CHANNELS:
-                        self.channel_offset = 0
+			if ev.value == 0: #Key Up
+				if ev.code in self.KEYS_GRID:
+					ch, bt = self.KEYS_GRID[ev.code]
+					channel = self.channel_offset + ch
+					beat = (self.zoom_level / 8) * bt
+					self.pattern.tap(channel, beat, width=self.zoom_level/8, keyboard=True)
+					self.load_pattern()
+				elif ev.code == self.KEY_CYCLE:
+					self.channel_offset += 4
+					if self.channel_offset >= Pattern.CHANNELS:
+						self.channel_offset = 0
 
+class PatternButton(urwid.WidgetWrap):
+    def __init__(self, pattern, mainui):
+        self.pattern = pattern
+        self.mainui = mainui
+
+        self.content = urwid.Text('') 
+        self.box = urwid.LineBox(urwid.Padding(self.content))
+        super(PatternButton, self).__init__(urwid.AttrMap(self.box, 'inactive_btn'))
+        self.refresh()
+
+    def refresh(self):
+        if self.pattern is None:
+            self.content.set_text("New Pattern")
+            self._w.set_attr_map({None: 'new_btn'})
+            self.keybinding = (E.KEY_INSERT, None)
+        else:
+            self.content.set_text(self.pattern.title)
+            if self.pattern.active:
+                self._w.set_attr_map({None: 'active_btn'})
+            else:
+                self._w.set_attr_map({None: 'inactive_btn'})
+            self.keybinding = self.pattern.keybinding
+
+    def mouse_event(self, size, event, button, col, row, focus):
+        if event == "mouse press":
+            if button == 1: # Left button
+                self.press()
+                return True
+            elif button == 2: # Middle button
+                self.edit()
+                return True
+        elif event == "ctrl mouse press":
+            self.edit()
+            return True
+        return False
+
+    def press(self):
+        if self.pattern is not None:
+            self.pattern.toggle()
+        else:
+            pass
+        self.refresh()
+
+    def edit(self):
+        self.mainui.seqgrid.load_pattern(self.pattern)
+        
 
 class PatternGrid(object):
     HOTKEYS = [E.KEY_F1, E.KEY_F2, E.KEY_F3, E.KEY_F4,
                E.KEY_F5, E.KEY_F6, E.KEY_F7, E.KEY_F8,
                E.KEY_F9, E.KEY_F10, E.KEY_F11, E.KEY_F12,
                E.KEY_HOME, E.KEY_END, E.KEY_INSERT, E.KEY_DELETE ]
+
     HOTKEY_NAMES = ["F1", "F2", "F3", "F4",
                     "F5", "F6", "F7", "F8",
                     "F9", "F10", "F11", "F12",
                     "Hom", "End", "Ins", "Del" ]
 
-    def __init__(self, patterns):
+    HOTKEY_DICT = dict(zip(HOTKEYS, HOTKEY_NAMES))
+
+    def __init__(self, patterns, mainui):
         self.patterns = patterns
+        self.mainui = mainui
 
         self.new_pattern = urwid.LineBox(urwid.Padding(urwid.Text("New")))
         self.content = urwid.GridFlow([], 16, 1, 1, 'center')
-        self.base = urwid.LineBox(urwid.Filler(self.content))
+        self.base = urwid.AttrMap(urwid.LineBox(urwid.Filler(self.content)), 'inactive_window')
 
         self.rebuild_buttons()
     
     def make_button(self, pattern):
-#return urwid.LineBox(urwid.SolidFill("."))
-        return urwid.LineBox(urwid.Padding(urwid.Text(pattern.title)))
+        #box = urwid.LineBox(urwid.Padding(urwid.Text(pattern.title)))
+        #return urwid.AttrMap(box, 'active_btn' if pattern.active else 'inactive_btn')
+        return PatternButton(pattern, self.mainui)
 
     def make_new_button(self):
-        return urwid.LineBox(urwid.Padding(urwid.Text("New")))
+        #box = urwid.LineBox(urwid.Padding(urwid.Text("New")))
+        #return urwid.AttrMap(box, 'new_btn')
+        return PatternButton(None, self.mainui)
 
     def rebuild_buttons(self):
         btns = []
@@ -452,12 +468,15 @@ class PatternGrid(object):
 
     def keyboard_event(self, event, mode=False):
         kid, ev, pressed = event
-
+        if mode:
+            if ev.value == 0: #Key Up
+                pass
 
 class SettingsBox(object):
-    def __init__(self):
+    def __init__(self, mainui):
+        self.mainui = mainui
         self.content = urwid.Pile([])
-        self.base = urwid.LineBox(self.content)
+        self.base = urwid.AttrMap(urwid.LineBox(self.content), 'inactive_window')
     def keyboard_event(self, event, mode=False):
         kid, ev, pressed = event
 
@@ -471,17 +490,24 @@ class CursedLightUI(object):
         ('bpm_text', '', '', '', '#333', '#ddd'),
         ('bg', '', '', '', '#333', '#fff'),
         ('status', '', '', '', '#333', '#ddd'),
-        ('status', '', '', '', '#333', '#ddd'),
+        ('status_grabbed', '', '', '', '#FFF', '#f00'),
+        ('active_btn', '', '', '', '#03f', '#fff'),
+        ('inactive_btn', '', '', '', '#333', '#fff'),
+        ('new_btn', '', '', '', '#888', '#fff'),
+        ('active_window', '', '', '', '#03f', '#fff'),
+        ('inactive_window', '', '', '', '#333', '#fff'),
     ]
 
-    KEY_MODE = E.KEY_SPACE
+    KEY_MODE = E.KEY_CAPSLOCK
+    KEY_GRAB = E.KEY_ESC
     MODE_PAT = 0
     MODE_SEQ = 1
 
-    def __init__(self, keyboards, effects_runner):
+    def __init__(self, keyboards, device_manager):
         self.tb = Timebase()
         self.keyboards = keyboards
-        self.effects_runner = effects_runner
+        #self.effects_runner = effects_runner
+        self.device_manager = device_manager
         self.running = True
 
         self.mode = self.MODE_PAT
@@ -502,39 +528,66 @@ class CursedLightUI(object):
         self.footer = urwid.Columns([])
         self.center = urwid.Pile([])
 
-        self.patterns = [Pattern.deserialize(EXAMPLE_PATTERN_SERIALIZED) for i in range(10)]
+        self.patterns = [Pattern.new_template(self.device_manager) for i in range(10)]
+        self.patterns[0].channels[0] = StrobeChannel(self.device_manager.devices[0], RGBA["red"])
 
-        self.seqgrid = SequencingGrid()
+        self.seqgrid = SequencingGrid(self)
         self.seqgrid.load_pattern(self.patterns[0])
-        self.patgrid = PatternGrid(self.patterns)
-        self.settings = SettingsBox()
+        self.patgrid = PatternGrid(self.patterns, self)
+        self.settings = SettingsBox(self)
+        
+        self.toggle_mode(new_mode=self.MODE_PAT)
+
         self.vbody = urwid.Pile([('pack', self.seqgrid.base), self.patgrid.base])
         self.body = urwid.Columns([('weight', 5, self.vbody), ('weight', 1, self.settings.base)])
 
         self.loop.widget.original_widget = urwid.Frame(body=self.body, header=self.header, footer=self.footer)
 
         self.status = urwid.Text(('status', 'CursedLight - Debug'), align='left')
+        self.keyboard_status = urwid.Text(('status', 'Keyboard Free'), align='center')
         self.device_status = urwid.Text(('status', 'Devices'), align='right')
         self.bpm = urwid.Text("", align='left')
         self.ticker = urwid.Text("", align='right')
 
         self.header.contents.append((self.status, self.header.options()))
+        self.header.contents.append((self.keyboard_status, self.header.options()))
         self.header.contents.append((self.device_status, self.header.options()))
         self.footer.contents.append((self.bpm, self.footer.options()))
         self.footer.contents.append((self.ticker, self.footer.options()))
-
 #self.setup_devices()
 
         self.keypress_master = {
-            E.KEY_E: lambda ev: self.tb.quantize(),
-            E.KEY_G: lambda ev: self.tb.multiply(2),
-            E.KEY_H: lambda ev: self.tb.multiply(0.5),
-            E.KEY_Q: lambda ev: self.stop(),
-            E.KEY_R: lambda ev: self.tb.sync(ev.timestamp()),
-            E.KEY_T: lambda ev: self.tb.tap(ev.timestamp()),
-            E.KEY_F: lambda ev: self.tb.nudge(1),
-            E.KEY_D: lambda ev: self.tb.nudge(-1),
+            #E.KEY_E: lambda ev: self.tb.quantize(),
+            #E.KEY_G: lambda ev: self.tb.multiply(2),
+            #E.KEY_H: lambda ev: self.tb.multiply(0.5),
+            E.KEY_DELETE: lambda ev: self.stop(),
+            #E.KEY_R: lambda ev: self.tb.sync(ev.timestamp()),
+            #E.KEY_T: lambda ev: self.tb.tap(ev.timestamp()),
+            #E.KEY_F: lambda ev: self.tb.nudge(1),
+            #E.KEY_D: lambda ev: self.tb.nudge(-1),
         }
+
+        global debug
+        debug = lambda s: self.debug(s)
+
+    def debug(self, s):
+        self.device_status.set_text("Debug: %s" % s)
+
+    def toggle_mode(self, new_mode=None):
+        if new_mode is None:
+            self.mode = self.MODE_PAT if self.mode == self.MODE_SEQ else self.MODE_SEQ
+        else:
+            self.mode = new_mode
+
+        if self.mode == self.MODE_SEQ:
+            self.seqgrid.base.set_attr_map({None: 'active_window'})
+            self.patgrid.base.set_attr_map({None: 'inactive_window'})
+            self.settings.base.set_attr_map({None: 'inactive_window'})
+        elif self.mode == self.MODE_PAT:
+            self.seqgrid.base.set_attr_map({None: 'inactive_window'})
+            self.patgrid.base.set_attr_map({None: 'active_window'})
+            self.settings.base.set_attr_map({None: 'inactive_window'})
+
 
     def master_kbd_handler(self, event):
         kid, ev, pressed = event
@@ -542,168 +595,56 @@ class CursedLightUI(object):
             if ev.code in self.keypress_master:
                 self.keypress_master[ev.code](ev)
             if ev.code == self.KEY_MODE:
-                self.mode = 1 - self.mode
+                self.toggle_mode()
+        if ev.code == self.KEY_GRAB:
+            if self.keyboards.kbds[0].grab:
+                self.keyboard_status.set_text(("status_grabbed", "Keyboard Grabbed"))
+            else:
+                self.keyboard_status.set_text(("status", "Keyboard Free"))
         
         self.patgrid.keyboard_event(event, mode=self.mode==self.MODE_PAT)
         self.seqgrid.keyboard_event(event, mode=self.mode==self.MODE_SEQ)
         self.settings.keyboard_event(event, mode=False)
 
 
-    def can_device_kbd_handler(self, event, dgui, devs):
-        def toggle_effect(eff_name, *args, **kwargs):
-            if self.effects_runner.effect_name_exists(eff_name):
-                eff = self.effects_runner.stop_effect(eff_name)
-                dgui.effects.contents = filter(lambda x: x[0] != eff.ui.base, dgui.effects.contents)
-                return False 
-            else:
-                eff = self.effects_runner.add_effect(eff_name, *args, **kwargs)
-                dgui.effects.contents.append((eff.ui.base, dgui.effects.options()))
-                return True
-
-        kid, ev, pressed = event
-        if ev.value == 1:
-            dgui.kbd_test.set_text('KEY ({})'.format(kid))
-        elif ev.value == 0:
-            dgui.kbd_test.set_text('')
-
-        speed_keys = {
-            E.KEY_RIGHTSHIFT: 0,
-            E.KEY_RIGHTCTRL: 1,
-            E.KEY_RIGHTALT: 2,
-            # Default is 3
-            E.KEY_LEFTALT: 4,
-            E.KEY_LEFTCTRL: 5,
-            E.KEY_LEFTSHIFT: 6
-        }
-
-        solid_color_keys = {
-            E.KEY_Z: 'red',
-            E.KEY_X: 'orange',
-            E.KEY_C: 'yellow',
-            E.KEY_V: 'green',
-            E.KEY_B: 'cyan',
-            E.KEY_N: 'blue',
-            E.KEY_M: 'purple',
-            E.KEY_COMMA: 'white',
-            E.KEY_DOT: 'black',
-        }
-        pulse_color_keys = {
-            E.KEY_Z: 'red',
-            E.KEY_X: 'orange',
-            E.KEY_C: 'yellow',
-            E.KEY_V: 'green',
-            E.KEY_B: 'cyan',
-            E.KEY_N: 'blue',
-            E.KEY_M: 'purple',
-            E.KEY_COMMA: 'white',
-            E.KEY_DOT: 'black',
-        }
-
-        fadein_color_keys = {
-            E.KEY_LEFTBRACE: 'black',
-            E.KEY_RIGHTBRACE: 'white',
-        }
-
-        pulse_color_keys = {
-            E.KEY_Q: 'red',
-            E.KEY_W: 'orange',
-            E.KEY_E: 'yellow',
-            E.KEY_R: 'green',
-            E.KEY_T: 'cyan',
-            E.KEY_Y: 'blue',
-            E.KEY_U: 'purple',
-            E.KEY_I: 'white',
-            E.KEY_O: 'black',
-        }
-
-        rate = 3
-        for s in speed_keys:
-            if s in pressed:
-                rate = speed_keys[s]
-                break
-        if E.KEY_SPACE in pressed:
-            rate *= -1
-
-        if ev.value == 0: # Key up
-            if ev.code in solid_color_keys:
-                color_name = solid_color_keys[ev.code]
-                eff_name = "{} solid {}".format(dgui.name, color_name)
-                eff = self.effects_runner.stop_effect(eff_name)
-                if eff is not None:
-                    dgui.effects.contents = filter(lambda x: x[0] != eff.ui.base, dgui.effects.contents)
-        if ev.value == 1: # Key down
-            if ev.code in solid_color_keys:
-                if E.KEY_LEFTMETA in pressed:
-                    color_name = solid_color_keys[ev.code]
-                    eff_name = "{} solid {}".format(dgui.name, color_name)
-                    toggle_effect(eff_name, SolidColorEffect, devs.keys(), RGBA[color_name])
-                else:
-                    # Strobe
-                    color_name = solid_color_keys[ev.code]
-                    eff_name = "{} strobe {}".format(dgui.name, color_name)
-#toggle_effect(eff_name, StrobeColorEffect, devs.keys(), RGBA[color_name], rate=rate)
-                    toggle_effect(eff_name, StrobeEffect, devs.keys(), RGBA[color_name], rate=rate)
-            elif ev.code in fadein_color_keys:
-                color_name = fadein_color_keys[ev.code]
-                eff_name = "{} fadein {}".format(dgui.name, color_name)
-                rate = max(0, rate - 2)
-                toggle_effect(eff_name, FadeinEffect, devs.keys(), color_rgba=RGBA[color_name], rate=rate)
-            elif ev.code in pulse_color_keys:
-                color_name = pulse_color_keys[ev.code]
-                if E.KEY_LEFTMETA in pressed:
-                    eff_name = "{} swipe {}".format(dgui.name, color_name)
-                    toggle_effect(eff_name, SwipeColorEffect, devs.keys(), color_rgba=RGBA[color_name], rate=rate)
-                else:
-                    eff_name = "{} pulse {}".format(dgui.name, color_name)
-                    toggle_effect(eff_name, PulseColorEffect, devs.keys(), color_rgba=RGBA[color_name], rate=rate)
-            elif ev.code == E.KEY_A:
-                eff_name = "{} flash_rainbow".format(dgui.name)
-                toggle_effect(eff_name, FlashRainbowEffect, devs.keys())
-            elif ev.code == E.KEY_S:
-                eff_name = "{} smooth_rainbow".format(dgui.name)
-                toggle_effect(eff_name, RainbowEffect, devs.keys(), l_period=rate)
-            elif ev.code == E.KEY_L:
-                eff_name = "{} pulse black".format(dgui.name)
-                toggle_effect(eff_name, PulseColorEffect, devs.keys(), RGBA["black"])
-            elif ev.code == E.KEY_END:
-                # Reset
-                [self.effects_runner.reset_device(uid) for uid in devs.keys()]
-                dgui.effects.contents = []
-
-
     def setup_devices(self):
-        self.dguis = {}
-        def kbd_handler(dgui, devs): return lambda ev: self.can_device_kbd_handler(ev, dgui, devs)
-        for devgroup, devs in CAN_DEVICE_GROUPS.items():
-            dgui = CANDeviceGroupUI(devgroup)
-            self.body.contents.append((dgui.base, self.body.options()))
-            dgui.dev_group.set_text("{} ({})".format(devgroup, len(devs)))
-            self.dguis[devgroup] = dgui
-            self.kbd_event_handlers[KEYBOARD_MAP[devgroup]].append(
-                    kbd_handler(dgui, devs)
-            )
-        self.device_status.set_text("Devices: {} CAN".format(len(self.effects_runner.canbus.addresses)-1))
-        if IRON_CURTAIN_ENABLED:
-            icui = IronCurtainUI(lambda sc: self.iron_curtain_ui_handler(sc))
-            self.body.contents.append((icui.base, self.body.options()))
-            self.dguis[IRON_CURTAIN] = icui
-            self.kbd_event_handlers[KEYBOARD_MAP[IRON_CURTAIN]].append(
-                (lambda ui: lambda ev: self.iron_curtain_kbd_handler(ev, ui))(icui)
-            )
-            self.device_status.set_text("Devices: {} CAN + Iron Curtain".format(len(self.effects_runner.canbus.addresses)-1))
+        pass
+
+    #def setup_devices(self):
+    #    self.dguis = {}
+    #    def kbd_handler(dgui, devs): return lambda ev: self.can_device_kbd_handler(ev, dgui, devs)
+    #    for devgroup, devs in CAN_DEVICE_GROUPS.items():
+    #        dgui = CANDeviceGroupUI(devgroup)
+    #        self.body.contents.append((dgui.base, self.body.options()))
+    #        dgui.dev_group.set_text("{} ({})".format(devgroup, len(devs)))
+    #        self.dguis[devgroup] = dgui
+    #        self.kbd_event_handlers[KEYBOARD_MAP[devgroup]].append(
+    #                kbd_handler(dgui, devs)
+    #        )
+    #    self.device_status.set_text("Devices: {} CAN".format(len(self.effects_runner.canbus.addresses)-1))
+    #    if IRON_CURTAIN_ENABLED:
+    #        icui = IronCurtainUI(lambda sc: self.iron_curtain_ui_handler(sc))
+    #        self.body.contents.append((icui.base, self.body.options()))
+    #        self.dguis[IRON_CURTAIN] = icui
+    #        self.kbd_event_handlers[KEYBOARD_MAP[IRON_CURTAIN]].append(
+    #            (lambda ui: lambda ev: self.iron_curtain_kbd_handler(ev, ui))(icui)
+    #        )
+    #        self.device_status.set_text("Devices: {} CAN + Iron Curtain".format(len(self.effects_runner.canbus.addresses)-1))
 
     def loop_forever(self):
         self.loop.run()
 
     def idle_loop(self):
         tick = self.tb.tick()
+        for pattern in self.patterns:
+            pattern.tick(tick)
         self.seqgrid.update_marks(time=tick)
         self.ticker.set_text([('bpm_text', 'Tick: '), ('bpm', '{0}.{1:03d}'.format(*tick))])
         self.bpm.set_text([('bpm_text', 'BPM: '), ('bpm', '{: <6.01f}'.format(self.tb.bpm))])
         if tick[1] < 10:
             self.keyboards.set_all_leds(caps=tick[0] == 0)
 
-        self.effects_runner.tick(tick)
+        self.device_manager.tick(tick)
 
         while not self.keyboards.events.empty():
             try:
@@ -733,11 +674,13 @@ def main():
 #keyboards.set_leds(True, True, True)
         time.sleep(0.5)
 #keyboards.set_leds(False,False,False)
-        bus = FakeCanBus("/dev/ttyUSB0", 115200)
+        #bus = FakeCanBus("/dev/ttyUSB0", 115200)
 #bus = CanBus("/dev/ttyUSB0", 115200)
-        effects_runner = EffectsRunner(bus)
-        [effects_runner.add_device(*dev) for dev in CAN_DEVICES.items()]
-        ui = CursedLightUI(keyboards, effects_runner)
+        led_strip = FakeSingleBespeckleDevice("/dev/ttyUSB0", 115200)
+        device_manager = DeviceManager([led_strip])
+        #effects_runner = EffectsRunner(bus)
+        #[effects_runner.add_device(*dev) for dev in CAN_DEVICES.items()]
+        ui = CursedLightUI(keyboards, device_manager)
     except Exception:
         keyboards.stop()
         raise

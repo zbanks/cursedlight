@@ -14,10 +14,10 @@ class Timebase(object):
              usually 240.
     `tick` - A tuple, `(beat, frac)`.
     """
+    beats = 4
+    fracs = 240
     # Thanks @ervanalb !
     def __init__(self):
-        self.fracs = 240
-        self.beats = 4
         self.taps = []
         self.beat = -1
         self.period = 0.5
@@ -78,3 +78,21 @@ class Timebase(object):
     def tick(self):
         self.update(time.time())
         return (self.beat, self.frac)
+
+    @classmethod
+    def difference(cls, t1, t2=None):
+        b1, f1 = t1
+        if t2 is None:
+            return b1 * cls.fracs + f1
+        b2, f2 = t2
+        while b1 > b2: # Assume it wrapped around
+            b2 += cls.beats
+        diff = (b2 - b1) * cls.fracs
+        diff += f2 - f1
+        return diff
+
+    @classmethod
+    def scale(cls, time, tmax):
+        beat, frac = time
+        br = tmax / cls.beats
+        return br * beat + br * frac / cls.fracs 
