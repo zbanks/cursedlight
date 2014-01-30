@@ -63,6 +63,7 @@ class SingleBespeckleDevice(object):
     Abstraction for sending data to a single Bespeckle-based device
     """
     CMD_TICK = 0x80
+    CMD_TICK = 0x88
     CMD_RESET = 0x83
     CMD_REBOOT = 0x83
     CMD_MSG = 0x81
@@ -112,6 +113,9 @@ class SingleBespeckleDevice(object):
     def tick(self, time):
         beat, frac = time
         self.framed_packet([self.CMD_TICK, frac])
+
+    def beat(self):
+        self.framed_packet([self.CMD_BEAT])
    
     def reset(self):
         self.framed_packet([self.CMD_RESET])
