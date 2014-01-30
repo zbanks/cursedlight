@@ -32,6 +32,12 @@ def rgba_to_termcolor(rgba):
     def h(x): return hex((x)/16)[-1]
     return ("#" + "".join(map(h, [r,g,b])), a / 255.0, contrast_bw(rgba))
 
+def rgb_add(base, delta, scale=8, neg=False):
+    clip = lambda x: min(max(x, 0), 0xff)
+    if neg:
+        return [clip(b - (d / scale)) for b, d in zip(base[0:3], delta[0:3])] + [base[3]]
+    return [clip(b + (d / scale)) for b, d in zip(base[0:3], delta[0:3])] + [base[3]]
+
 HSVA = {
     "clear":     [0x00, 0x0, 0x0, 0x0],
     "red":     [0x00, 0xff, 0xff, 0xff],
@@ -51,6 +57,9 @@ RGBA = {
     "red": [0xff, 0x00, 0x00, 0xff],
     "green": [0x00, 0xff, 0x00, 0xff],
     "blue": [0x00, 0x00, 0xff, 0xff],
+    "yellow": [0xff, 0xff, 0x00, 0xff],
+    "cyan": [0x00, 0xff, 0xff, 0xff],
+    "magenta": [0xff, 0x00, 0xff, 0xff],
     "white": [0xff, 0xff, 0xff, 0xff],
     "black": [0x00, 0x00, 0x00, 0xff],
 }

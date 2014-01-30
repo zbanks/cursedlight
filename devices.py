@@ -1,24 +1,40 @@
 import logging
+import threading
 import serial
 import time
 
 from config import *
 
-if IRON_CURTAIN_ENABLED:
-    from curtain import BeatBlaster
-
 logger = logging.getLogger(__name__)
 
-# List of all can devices
-CAN_DEVICES = dict(reduce(lambda acc, val: acc + val.items(), CAN_DEVICE_GROUPS.values(), []))
-
-# Multicast
-CAN_DEVICES[CAN_ALL_ADDRESS] = "(All)"
 
 class DeviceManager(object):
     def __init__(self, devices):
         self.devices = devices
         self.last_tick = (0, 0)
+        self.run_ticks = True
+        self.skipped = 0
+        self.init()
+
+    def init(self):
+        for dev in self.devices:
+            dev.reset()
+        
+    def set_timebase(self, timebase):
+        self.timebase = timebase
+        def run_ticks():
+            ltick = None
+            while self.run_ticks:
+                t = self.timebase.tick()
+                if t:
+                    if t != ltick:
+                        self.tick(t)
+                        self.skipped = self.timebase.difference(ltick or (0,0), t)
+                        ltick = t[:]
+                time.sleep(0.0001)
+        self.tick_thread = threading.Thread(target=run_ticks)
+        self.tick_thread.daemon = True
+        self.tick_thread.start()
 
     def tick(self, tick):
         if tick == self.last_tick:
@@ -39,6 +55,9 @@ class DeviceManager(object):
             self.dev.reset()
 
 
+    def close(self):
+        self.run_ticks = False
+
 class SingleBespeckleDevice(object):
     """
     Abstraction for sending data to a single Bespeckle-based device
@@ -57,10 +76,11 @@ class SingleBespeckleDevice(object):
 
     def raw_packet(self, data):
         logger.debug("Serial Data: %s", ';'.join(map(lambda x: "{:02x}".format(x), data)))
+        #print ("Serial Data: %s", ';'.join(map(lambda x: "{:02x}".format(x), data)))
         self.ser.write("".join([chr(d) for d in data]))
-        time.sleep(0.0001) #XXX
 
     def cobs_packet(self, data):
+        #print ("Not encoded: %s", ';'.join(map(lambda x: "{:02x}".format(x), data)))
         rdata = []
         i = 0
         for d in data[::-1]:
@@ -70,7 +90,7 @@ class SingleBespeckleDevice(object):
                 i = 0
             else:
                 rdata.append(d)
-        self.raw_packet([0, i] + rdata[::-1])
+        self.raw_packet([0, i+1] + rdata[::-1])
         
 
     def framed_packet(self, data=None, flags=0x00, addr=0x00):
@@ -105,7 +125,7 @@ class SingleBespeckleDevice(object):
             data = []
         bespeckle_id = self._get_next_id()
         self.bespeckle_ids.add(bespeckle_id)
-        self.framed_packet([bespeckle_class, bespeckle_id] + data)
+        self.framed_packet([bespeckle_class, bespeckle_id] + list(data))
         return bespeckle_id
 
     def bespeckle_pop_effect(self, bespeckle_id):
@@ -117,7 +137,7 @@ class SingleBespeckleDevice(object):
     def bespeckle_msg_effect(self, bespeckle_id, data=None):
         if data is None:
             data = []
-        self.framed_packet([self.CMD_MSG, bespeckle_id] + data)
+        self.framed_packet([self.CMD_MSG, bespeckle_id] + list(data))
         return bespeckle_id
 
 class FakeSingleBespeckleDevice(SingleBespeckleDevice):

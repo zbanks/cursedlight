@@ -63,10 +63,11 @@ class StrobeChannelUI(ChannelUI):
 
 
 class StrobeChannel(Channel):
-    bespeckle_effect_class = 0x10
+    bespeckle_effect_class = 0x21
     ui_class = StrobeChannelUI
+    name = "Strobe"
 
-    def init(self, color_rgba=RGBA["white"], width=1):
+    def init(self, color_rgba=RGBA["white"], width=10):
         self.color_rgba = color_rgba
         self.bespeckle_id = None
         self.last_on = None
@@ -82,10 +83,10 @@ class StrobeChannel(Channel):
             return 
         if value:
             if self.last_on is None:
-                self.device.bespeckle_msg_effect(self.bespeckle_id, self.color_rgba + [0x0, 0x03])
+                self.device.bespeckle_msg_effect(self.bespeckle_id, self.color_rgba + [self.width, 0]) #[tick, tick+self.width])
             self.last_on = time
         elif self.last_on is not None and Timebase.difference(self.last_on, time) > self.width:
-            self.device.bespeckle_msg_effect(self.bespeckle_id, RGBA["clear"] + [0x0, 0x82])
+            self.device.bespeckle_msg_effect(self.bespeckle_id, RGBA["clear"] + [0xff, 0x0])
             self.last_on = None
 
     def stop(self):

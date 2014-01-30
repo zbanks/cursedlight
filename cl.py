@@ -241,6 +241,7 @@ class SequencingGrid(object):
     KEY_CH2 = E.KEY_O
     KEY_CH3 = E.KEY_L
     KEY_CH4 = E.KEY_DOT
+    KEYS_CHANNELS = {KEY_CH1: 1, KEY_CH2: 2, KEY_CH3: 3, KEY_CH4: 4}
 
     KEY_CYCLE = E.KEY_TAB
     KEY_LEFT = E.KEY_LEFTSHIFT
@@ -258,6 +259,17 @@ class SequencingGrid(object):
     KEY_BLACK = E.KEY_APOSTROPHE
     KEY_MORE = E.KEY_BACKSLASH
     KEY_LESS = E.KEY_BACKSPACE
+
+    KEYS_COLORS = {
+        KEY_RED: "red",
+        KEY_YELLOW: "yellow",
+        KEY_GREEN: "green",
+        KEY_CYAN: "cyan",
+        KEY_BLUE: "blue",
+        KEY_MAGENTA: "magenta",
+        KEY_WHITE: "white",
+        KEY_BLACK: "black",
+    }
 
     # Unused:
     #E.KEY_SLASH
@@ -367,17 +379,30 @@ class SequencingGrid(object):
     def keyboard_event(self, event, mode=False):
         kid, ev, pressed = event
         if mode:
-			if ev.value == 0: #Key Up
-				if ev.code in self.KEYS_GRID:
-					ch, bt = self.KEYS_GRID[ev.code]
-					channel = self.channel_offset + ch
-					beat = (self.zoom_level / 8) * bt
-					self.pattern.tap(channel, beat, width=self.zoom_level/8, keyboard=True)
-					self.load_pattern()
-				elif ev.code == self.KEY_CYCLE:
-					self.channel_offset += 4
-					if self.channel_offset >= Pattern.CHANNELS:
-						self.channel_offset = 0
+            if ev.value == 0: #Key Up
+                if ev.code in self.KEYS_GRID:
+                    ch, bt = self.KEYS_GRID[ev.code]
+                    channel = self.channel_offset + ch
+                    beat = (self.zoom_level / 8) * bt
+                    self.pattern.tap(channel, beat, width=self.zoom_level/8, keyboard=True)
+                    self.load_pattern()
+                elif ev.code == self.KEY_CYCLE:
+                    self.channel_offset += 4
+                    if self.channel_offset >= Pattern.CHANNELS:
+                        self.channel_offset = 0
+                elif ev.code in self.KEYS_COLORS:
+                    channel = self.pattern.channels[self.channel_active]
+                    if channel is not None:
+                        color_name = self.KEYS_COLORS[ev.code]
+                        color_rgba = RGBA[color_name]
+                        if self.KEY_MORE in pressed:
+                            color_rgba = rgb_add(channel.color_rgba, color_rgba)
+                        elif self.KEY_LESS in pressed:
+                            color_rgba = rgb_add(channel.color_rgba, color_rgba, neg=True)
+                        channel.color_rgba = color_rgba
+                elif ev.code in self.KEYS_CHANNELS:
+                    self.channel_active = self.channel_offset + self.KEYS_CHANNELS[ev.code] - 1
+
 
 class PatternButton(urwid.WidgetWrap):
     def __init__(self, pattern, mainui):
@@ -509,6 +534,7 @@ class CursedLightUI(object):
         #self.effects_runner = effects_runner
         self.device_manager = device_manager
         self.running = True
+        self.device_manager.set_timebase(self.tb)
 
         self.mode = self.MODE_PAT
         self.last_tick = (0, 0)
@@ -647,7 +673,8 @@ class CursedLightUI(object):
         if tick[1] < 10:
             self.keyboards.set_all_leds(caps=tick[0] == 0)
 
-        self.device_manager.tick(tick)
+        #self.device_manager.tick(tick)
+        debug("Fracs skipped: %s" % (self.device_manager.skipped) )
 
         while not self.keyboards.events.empty():
             try:
