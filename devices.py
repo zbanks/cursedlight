@@ -3,10 +3,7 @@ import threading
 import serial
 import time
 
-from config import *
-
 logger = logging.getLogger(__name__)
-
 
 class DeviceManager(object):
     def __init__(self, devices):
@@ -62,7 +59,7 @@ class SingleBespeckleDevice(object):
     """
     Abstraction for sending data to a single Bespeckle-based device
     """
-    CMD_TICK = 0x80
+    CMD_SYNC = 0x80
     CMD_TICK = 0x88
     CMD_RESET = 0x83
     CMD_REBOOT = 0x83
@@ -110,12 +107,15 @@ class SingleBespeckleDevice(object):
                 return i
         return 0xff # Just overwrite the last effect. lololol
 
-    def tick(self, time):
-        beat, frac = time
-        self.framed_packet([self.CMD_TICK, frac])
+    #def tick(self, time):
+    #    beat, frac = time
+    #    self.framed_packet([self.CMD_TICK, frac])
 
-    def beat(self):
-        self.framed_packet([self.CMD_BEAT])
+    def tick(self):
+        self.framed_packet([self.CMD_TICK])
+
+    def sync(self, f=0):
+        self.framed_packet([self.CMD_SYNC, f])
    
     def reset(self):
         self.framed_packet([self.CMD_RESET])
